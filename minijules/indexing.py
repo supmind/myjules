@@ -2,7 +2,8 @@ import os
 import chromadb
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
-from tree_sitter_languages import get_parser
+from tree_sitter_language_pack import get_language, get_parser
+from tree_sitter import Parser
 from typing import List, Dict, Any
 
 # --- 全局配置 ---
@@ -12,8 +13,8 @@ WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
 DB_PATH = Path(__file__).parent.resolve() / "chroma_db"
 COLLECTION_NAME = "code_index"
 
-# 加载句子转换器模型
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# 加载句子转换器模型 (已升级)
+model = SentenceTransformer('BAAI/bge-large-en-v1.5')
 
 # --- Tree-sitter 多语言配置 ---
 
@@ -45,18 +46,21 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
     """使用 Tree-sitter 从单个文件中提取代码块。"""
     try:
         parser = get_parser(language)
+        lang_obj = get_language(language) # query需要语言对象
+
         query_str = QUERIES.get(language)
         if not query_str:
             return []
 
-        query = parser.language.query(query_str)
+        query = lang_obj.query(query_str)
         code = file_path.read_text(encoding='utf-8')
         tree = parser.parse(bytes(code, "utf8"))
 
         chunks = []
         captures = query.captures(tree.root_node)
 
-        for node, _ in captures:
+        # 正确的迭代方式：直接访问与'@capture'键关联的节点列表
+        for node in captures.get('capture', []):
             name_node = node.child_by_field_name("name")
             if name_node:
                 block_name = name_node.text.decode('utf8')
@@ -89,13 +93,12 @@ def index_workspace():
     print("开始索引工作区...")
     client = chromadb.PersistentClient(path=str(DB_PATH))
 
-    # 尝试删除旧集合，如果不存在则忽略错误
     try:
         client.delete_collection(name=COLLECTION_NAME)
         print(f"已删除旧集合: '{COLLECTION_NAME}'")
-    except ValueError: # ChromaDB 在 0.4.x 版本中引发 ValueError
+    except ValueError:
         pass
-    except Exception: # 捕获其他可能的异常，以提高健壮性
+    except Exception:
         pass
 
     collection = client.create_collection(name=COLLECTION_NAME)
@@ -142,13 +145,8 @@ def retrieve_context(query: str, n_results: int = 3) -> List[str]:
 
     return results['documents'][0] if results and results.get('documents') else []
 
-# --- 主程序入口 (用于手动测试) ---
 if __name__ == '__main__':
-    # 为了测试，我们先在工作区创建一些示例文件
-    # 使用 parents=True 确保父目录（workspace）也会被创建
     (WORKSPACE_DIR / "math").mkdir(parents=True, exist_ok=True)
-
-    # Python 示例
     (WORKSPACE_DIR / "math/operations.py").write_text("""
 class Calculator:
     def add(self, a, b):
@@ -157,8 +155,6 @@ class Calculator:
 def subtract(a, b):
     return a - b
     """)
-
-    # JavaScript 示例
     (WORKSPACE_DIR / "utils.js").write_text("""
 function greet(name) {
     console.log(`Hello, ${name}!`);
@@ -167,11 +163,7 @@ const sayGoodbye = (name) => {
     console.log(`Goodbye, ${name}.`);
 }
     """)
-
-    # 1. 索引工作区
     index_workspace()
-
-    # 2. 检索示例
     print("\n--- 检索测试 ---")
     retrieved_docs = retrieve_context("a function to add two numbers")
     print("\n检索到的文档:")

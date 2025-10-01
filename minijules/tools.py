@@ -83,6 +83,35 @@ def create_file(filename: str, content: str) -> str:
         return f"创建文件时发生意外错误: {e}"
 
 
+def replace_in_file(filename: str, old_string: str, new_string: str) -> str:
+    """
+    用 new_string 替换文件中所有出现的 old_string。
+    这是一个更精细的文件编辑工具。
+    """
+    try:
+        safe_path = _get_safe_path(filename)
+        if not safe_path.is_file():
+            return f"错误：文件 '{filename}' 未找到。"
+
+        # 读取文件内容
+        original_content = safe_path.read_text(encoding='utf-8')
+
+        # 执行替换
+        if old_string not in original_content:
+            return f"错误: 在文件 '{filename}' 中未找到要替换的字符串 '{old_string}'。"
+
+        new_content = original_content.replace(old_string, new_string)
+
+        # 写回文件
+        safe_path.write_text(new_content, encoding='utf-8')
+
+        return f"已成功在文件 '{filename}' 中执行替换。"
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        return f"替换文件内容时发生意外错误: {e}"
+
+
 def run_in_bash(command: str) -> str:
     """
     在工作区目录中运行一个 bash 命令。

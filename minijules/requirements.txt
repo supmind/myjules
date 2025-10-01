@@ -2,5 +2,5 @@ pyautogen
 chromadb
 sentence-transformers
 tree-sitter
-tree-sitter-languages
+tree-sitter-language-pack
 GitPython
