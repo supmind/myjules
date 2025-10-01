@@ -1,0 +1,5 @@
+pyautogen
+chromadb
+sentence-transformers
+tree-sitter
+tree-sitter-languages
