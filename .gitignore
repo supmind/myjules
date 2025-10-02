@@ -1,10 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# Ignore Python cache files
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
 
-# ChromaDB database files
+# Ignore generated directories by MiniJules
+minijules/workspace/
 minijules/chroma_db/
 
-# Workspace files - These are temporary and should not be versioned
-minijules/workspace/
+# Ignore the memory log file
+minijules/memory.log

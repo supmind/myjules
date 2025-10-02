@@ -66,10 +66,11 @@ planner = autogen.ConversableAgent(
     system_message="""您是一个专业的项目规划师。您的任务是接收一个高级目标和相关代码上下文，并将其分解成一个清晰、简洁、可执行的步骤列表。
 您的计划必须是一个编号列表，每一项都是一个独立的、可操作的指令。
 在您的回复中，只包含计划本身，不要有任何额外的解释或客套话。
+
+重要提示：执行者可以通过 `write_to_scratchpad` 和 `read_scratchpad` 工具使用一个“便签”来在步骤之间传递信息。如果任务复杂，您可以在计划中明确指示执行者使用便签。
 例如:
-1. 读取文件 `src/main.py`。
-2. 在第 25 行之后插入新的函数 `def new_feature()`。
-3. 运行测试命令 `pytest`。""",
+1. 读取文件 `config.json`，并将其中的 `api_key` 值写入便签。
+2. 读取便签中的 `api_key`，并用它来创建一个新的 API 客户端。""",
     llm_config=llm_config,
 )
 
@@ -78,7 +79,14 @@ planner = autogen.ConversableAgent(
 executor = autogen.AssistantAgent(
     name="Executor",
     system_message="""您是任务执行者。您将接收一个具体的任务，并使用您可用的工具来完成它。
-在完成每个任务后，报告您的结果。如果出现问题，请报告错误。""",
+在完成每个任务后，报告您的结果。如果出现问题，请报告错误。
+
+**您的工作流程应该是：**
+1.  **思考**: 首先，考虑是否需要从便签中读取信息。使用 `read_scratchpad` 工具来获取之前步骤留下的上下文。
+2.  **执行**: 使用您的其他工具来完成当前任务。
+3.  **记录**: 如果您发现了任何对后续步骤有用的信息（例如，文件名、代码片段、配置值等），请使用 `write_to_scratchpad` 工具将其记录下来。
+
+始终优先使用便签来维持任务的连续性。""",
     llm_config=llm_config,
 )
 
@@ -106,7 +114,10 @@ executor.register_function(
         "list_files": tools.list_files,
         "read_file": tools.read_file,
         "create_file": tools.create_file,
-        "replace_in_file": tools.replace_in_file,
+        "delete_file": tools.delete_file,
+        "replace_code_block": tools.replace_code_block,
+        "write_to_scratchpad": tools.write_to_scratchpad,
+        "read_scratchpad": tools.read_scratchpad,
         "run_in_bash": tools.run_in_bash,
         # Git 工具
         "git_status": tools.git_status,
@@ -121,23 +132,9 @@ executor.register_function(
 # 新的交互式工作流在 main() 函数中直接实现。
 
 
-import datetime
 import git
 from pathlib import Path
 import argparse
-
-# --- 记忆功能 ---
-MEMORY_FILE = "minijules/memory.log"
-
-def record_memory(summary: str):
-    """将任务摘要记录到长期记忆日志中。"""
-    with open(MEMORY_FILE, "a", encoding="utf-8") as f:
-        timestamp = datetime.datetime.now().isoformat()
-        f.write(f"--- MEMORY @ {timestamp} ---\n")
-        f.write(summary)
-        f.write("\n\n")
-    print("已将任务摘要记录到长期记忆中。")
-
 
 # --- 主程序入口 ---
 def main():
@@ -224,9 +221,6 @@ def main():
     else:
         print("\n--- ✅ 所有计划步骤均已成功完成 ---")
 
-    # 4. 记录总结
-    memory_summary = f"已完成任务: {task}\n执行的计划:\n{plan_text}"
-    record_memory(memory_summary)
     print("--- 任务流程结束 ---")
 
 if __name__ == "__main__":

@@ -83,33 +83,76 @@ def create_file(filename: str, content: str) -> str:
         return f"创建文件时发生意外错误: {e}"
 
 
-def replace_in_file(filename: str, old_string: str, new_string: str) -> str:
+def replace_code_block(filename: str, search_block: str, replace_block: str) -> str:
     """
-    用 new_string 替换文件中所有出现的 old_string。
-    这是一个更精细的文件编辑工具。
+    用一个代码块替换文件中的另一个代码块。
+    这比简单的字符串替换更精确、更安全。
     """
     try:
         safe_path = _get_safe_path(filename)
         if not safe_path.is_file():
             return f"错误：文件 '{filename}' 未找到。"
 
-        # 读取文件内容
         original_content = safe_path.read_text(encoding='utf-8')
 
-        # 执行替换
-        if old_string not in original_content:
-            return f"错误: 在文件 '{filename}' 中未找到要替换的字符串 '{old_string}'。"
+        if search_block not in original_content:
+            return f"错误: 在文件 '{filename}' 中未找到要替换的目标代码块。"
 
-        new_content = original_content.replace(old_string, new_string)
+        # 执行精确的代码块替换
+        new_content = original_content.replace(search_block, replace_block)
 
-        # 写回文件
         safe_path.write_text(new_content, encoding='utf-8')
 
-        return f"已成功在文件 '{filename}' 中执行替换。"
+        return f"文件 '{filename}' 中的代码块已成功替换。"
     except ValueError as e:
         return str(e)
     except Exception as e:
-        return f"替换文件内容时发生意外错误: {e}"
+        return f"替换代码块时发生意外错误: {e}"
+
+
+def delete_file(filename: str) -> str:
+    """
+    从工作区删除一个文件。
+    """
+    try:
+        safe_path = _get_safe_path(filename)
+        if not safe_path.is_file():
+            return f"错误：文件 '{filename}' 未找到或不是一个文件。"
+
+        safe_path.unlink()
+        return f"文件 '{filename}' 已成功删除。"
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        return f"删除文件时发生意外错误: {e}"
+
+
+def write_to_scratchpad(content: str) -> str:
+    """
+    将内容追加到工作区的临时便签文件中。
+    用于在任务步骤之间传递信息。
+    """
+    try:
+        # 便签文件存储在工作区根目录
+        scratchpad_path = WORKSPACE_DIR / ".scratchpad.md"
+        with scratchpad_path.open("a", encoding="utf-8") as f:
+            f.write(content + "\n")
+        return "内容已成功写入便签。"
+    except Exception as e:
+        return f"写入便签时发生意外错误: {e}"
+
+
+def read_scratchpad() -> str:
+    """
+    读取工作区临时便签文件的全部内容。
+    """
+    try:
+        scratchpad_path = WORKSPACE_DIR / ".scratchpad.md"
+        if not scratchpad_path.is_file():
+            return "便签为空或不存在。"
+        return scratchpad_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"读取便签时发生意外错误: {e}"
 
 
 def run_in_bash(command: str) -> str:
