@@ -7,34 +7,22 @@ import xml.etree.ElementTree as ET
 
 # 导入新的标准化结果类
 from minijules.result import ToolExecutionResult
+import minijules.indexing as indexing
+
+import json
 
 # --- 多语言配置中心 ---
-LANGUAGE_CONFIG = {
-    ".py": {
-        "language": "python",
-        "function_node_type": "function_definition",
-        "class_node_type": "class_definition",
-        "test_command": "python3 -m pytest . --junitxml=test-report.xml"
-    },
-    ".js": {
-        "language": "javascript",
-        "function_node_types": ["function_declaration", "method_definition", "variable_declarator"],
-        "class_node_type": "class_declaration",
-        "test_command": "npm install && npx jest --reporters=default --reporters=jest-junit"
-    },
-    ".go": {
-        "language": "go",
-        "function_node_type": "function_declaration",
-        "class_node_type": "type_spec",
-        "test_command": "go get -t -v ./... && go install github.com/jstemmer/go-junit-report/v2@latest && go test -v ./... | go-junit-report -set-exit-code > test-report.xml"
-    },
-    ".rs": {
-        "language": "rust",
-        "function_node_type": "function_item",
-        "class_node_type": "struct_item",
-        "test_command": "cargo test -- --format xml > test-report.xml"
-    }
-}
+def load_language_config():
+    """从 JSON 文件加载多语言配置。"""
+    try:
+        config_path = Path(__file__).parent / "language_config.json"
+        with config_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"错误: 无法加载或解析 language_config.json: {e}")
+        return {}
+
+LANGUAGE_CONFIG = load_language_config()
 
 WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
@@ -397,3 +385,22 @@ def manage_dependency(language: str, package_name: str, action: str = "add") -> 
 
     except Exception as e:
         return ToolExecutionResult(success=False, result=f"管理依赖时发生意外错误: {e}")
+
+def retrieve_code_context(query: str, n_results: int = 3) -> ToolExecutionResult:
+    """
+    Retrieves code snippets from the indexed workspace that are semantically
+    related to the given query. Call this when you need to understand existing
+    code before reading or modifying a file.
+
+    :param query: The query string to search for.
+    :param n_results: The maximum number of results to return.
+    """
+    try:
+        context_list = indexing.retrieve_context(query, n_results=n_results)
+        if not context_list:
+            return ToolExecutionResult(success=True, result="No relevant code context found.")
+
+        result_str = "\n\n---\n\n".join(context_list)
+        return ToolExecutionResult(success=True, result=result_str)
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"Failed to retrieve code context: {e}")
