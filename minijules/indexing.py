@@ -61,24 +61,48 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
 
         # 正确的迭代方式：直接访问与'@capture'键关联的节点列表
         for node in captures.get('capture', []):
+            # 提取块名称
             name_node = node.child_by_field_name("name")
             if name_node:
                 block_name = name_node.text.decode('utf8')
-            else:
+            else: # 备用方案，适用于 JS 箭头函数等情况
                 name_node = next((c for c in node.children if c.type == 'identifier'), None)
                 block_name = name_node.text.decode('utf8') if name_node else "anonymous"
 
             block_code = node.text.decode('utf8')
 
-            document = f"// FILEPATH: {file_path.relative_to(WORKSPACE_DIR)}\n" \
-                       f"// NAME: {block_name}\n\n" \
-                       f"{block_code}"
+            # --- 新增：向上查找父级上下文 ---
+            parent_class_name = None
+            current_node = node.parent
+            while current_node:
+                if current_node.type in ["class_definition", "class_declaration"]:
+                    # 找到父类的名称节点
+                    class_name_node = current_node.child_by_field_name("name")
+                    if class_name_node:
+                        parent_class_name = class_name_node.text.decode('utf8')
+                        break # 找到最近的父类即可
+                current_node = current_node.parent
 
-            chunk_id = f"{file_path.relative_to(WORKSPACE_DIR)}::{block_name}"
+            # --- 构建文档和元数据 ---
+            document_lines = [f"// FILEPATH: {file_path.relative_to(WORKSPACE_DIR)}"]
+            metadata = {"filepath": str(file_path.relative_to(WORKSPACE_DIR))}
+
+            if parent_class_name:
+                document_lines.append(f"// CLASS: {parent_class_name}")
+                metadata["class"] = parent_class_name
+
+            document_lines.append(f"// NAME: {block_name}")
+            metadata["name"] = block_name
+
+            document_lines.append(f"\n{block_code}")
+            document = "\n".join(document_lines)
+
+            # 创建唯一的 ID
+            chunk_id = f"{file_path.relative_to(WORKSPACE_DIR)}::{parent_class_name}::{block_name}" if parent_class_name else f"{file_path.relative_to(WORKSPACE_DIR)}::{block_name}"
 
             chunks.append({
                 "document": document,
-                "metadata": {"filepath": str(file_path.relative_to(WORKSPACE_DIR)), "name": block_name},
+                "metadata": metadata,
                 "id": chunk_id,
             })
         return chunks
@@ -146,30 +170,74 @@ def retrieve_context(query: str, n_results: int = 3) -> List[str]:
     return results['documents'][0] if results and results.get('documents') else []
 
 if __name__ == '__main__':
+    # --- 设置测试环境 ---
     (WORKSPACE_DIR / "math").mkdir(parents=True, exist_ok=True)
+
+    # Python 测试文件，包含一个类和一个独立函数
     (WORKSPACE_DIR / "math/operations.py").write_text("""
 class Calculator:
+    \"\"\"一个简单的计算器类。\"\"\"
     def add(self, a, b):
+        \"\"\"将两个数相加。\"\"\"
         return a + b
 
+    def multiply(self, a, b):
+        \"\"\"将两个数相乘。\"\"\"
+        return a * b
+
 def subtract(a, b):
+    \"\"\"一个独立的减法函数。\"\"\"
     return a - b
     """)
+
+    # JavaScript 测试文件
     (WORKSPACE_DIR / "utils.js").write_text("""
-function greet(name) {
-    console.log(`Hello, ${name}!`);
+class Greeter {
+    constructor(name) {
+        this.name = name;
+    }
+
+    greet() {
+        console.log(`Hello, ${this.name}!`);
+    }
 }
 const sayGoodbye = (name) => {
     console.log(`Goodbye, ${name}.`);
 }
     """)
+
+    # --- 运行索引 ---
     index_workspace()
-    print("\n--- 检索测试 ---")
-    retrieved_docs = retrieve_context("a function to add two numbers")
+
+    # --- 验证检索 ---
+    print("\n--- 检索测试：查询类方法 ---")
+    # 这个查询现在应该能利用类上下文
+    retrieved_docs = retrieve_context("calculator add function", n_results=1)
+
     print("\n检索到的文档:")
-    if retrieved_docs:
-        for doc in retrieved_docs:
-            print("---")
-            print(doc)
+    if retrieved_docs and retrieved_docs[0]:
+        doc = retrieved_docs[0]
+        print("---")
+        print(doc)
+        # 验证是否包含了类上下文
+        if "// CLASS: Calculator" in doc and "def add" in doc:
+            print("\n✅ 验证成功: 检索到的方法包含了正确的类上下文。")
+        else:
+            print("\n❌ 验证失败: 未找到预期的类上下文。")
+    else:
+        print("未检索到任何文档。")
+
+    print("\n--- 检索测试：查询独立函数 ---")
+    retrieved_docs_standalone = retrieve_context("subtract two numbers", n_results=1)
+
+    print("\n检索到的文档:")
+    if retrieved_docs_standalone and retrieved_docs_standalone[0]:
+        doc = retrieved_docs_standalone[0]
+        print("---")
+        print(doc)
+        if "def subtract" in doc and "// CLASS:" not in doc:
+             print("\n✅ 验证成功: 独立函数被正确检索，且不包含类上下文。")
+        else:
+            print("\n❌ 验证失败: 独立函数检索结果不正确。")
     else:
         print("未检索到任何文档。")

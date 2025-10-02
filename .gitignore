@@ -1,0 +1,10 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ChromaDB database files
+minijules/chroma_db/
+
+# Workspace files - These are temporary and should not be versioned
+minijules/workspace/
