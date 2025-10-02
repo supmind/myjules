@@ -22,6 +22,7 @@ LANGUAGES = {
     ".py": "python",
     ".js": "javascript",
     ".go": "go",
+    ".rs": "rust",
 }
 
 QUERIES = {
@@ -37,7 +38,11 @@ QUERIES = {
     "go": """
     (function_declaration name: (identifier) @name) @capture
     (type_declaration (type_spec name: (type_identifier) @name)) @capture
-    """
+    """,
+    "rust": """
+    (function_item name: (identifier) @name) @capture
+    (struct_item name: (type_identifier) @name) @capture
+    """,
 }
 
 # --- 核心索引逻辑 ---
