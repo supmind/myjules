@@ -404,3 +404,66 @@ def retrieve_code_context(query: str, n_results: int = 3) -> ToolExecutionResult
         return ToolExecutionResult(success=True, result=result_str)
     except Exception as e:
         return ToolExecutionResult(success=False, result=f"Failed to retrieve code context: {e}")
+
+def execute_tdd_cycle(feature_description: str, test_file_path: str, impl_file_path: str, agents: dict, language: str) -> ToolExecutionResult:
+    """
+    Executes a full Test-Driven Development cycle for a given feature.
+    This is a high-level composite tool that orchestrates a sub-task.
+
+    The cycle consists of:
+    1. Generating a failing test based on the feature description.
+    2. Running tests to confirm the failure.
+    3. Generating implementation code to make the test pass.
+    4. Running tests again to confirm success.
+
+    :param feature_description: A clear, natural language description of the feature to be implemented.
+    :param test_file_path: The path to the test file to be created.
+    :param impl_file_path: The path to the implementation file to be created/modified.
+    :param agents: A dictionary containing 'core_agent' and 'user_proxy' instances for sub-dialogues.
+    :param language: The programming language for the test run.
+    :return: A ToolExecutionResult summarizing the outcome of the TDD cycle.
+    """
+    core_agent = agents["core_agent"]
+    user_proxy = agents["user_proxy"]
+
+    cycle_history = []
+    summary = f"TDD Cycle for: '{feature_description}'\n\n"
+
+    try:
+        # --- Step 1: Generate Failing Test ---
+        print("--- [TDD Cycle] Step 1: Generating failing test... ---")
+        test_gen_prompt = f"Based on the feature description '{feature_description}', write the code for a failing test in the file '{test_file_path}'. The test should fail because the implementation in '{impl_file_path}' does not exist yet. Only output the code content, without any explanation or markdown."
+        chat_result = user_proxy.initiate_chat(core_agent, message=test_gen_prompt, max_turns=1, silent=True)
+        test_code = chat_result.summary.strip().replace("```python", "").replace("```", "").strip()
+
+        create_file(filename=test_file_path, content=test_code)
+        cycle_history.append(f"1. Wrote failing test to '{test_file_path}'.")
+
+        # --- Step 2: Confirm Test Fails ---
+        print("--- [TDD Cycle] Step 2: Confirming test failure... ---")
+        test_result_fail = run_tests_and_parse_report(language=language)
+        if test_result_fail.success:
+            return ToolExecutionResult(success=False, result=summary + "TDD cycle failed: The initial test passed unexpectedly.")
+        cycle_history.append(f"2. Confirmed test failure: {test_result_fail.result[:100]}...")
+
+        # --- Step 3: Generate Implementation ---
+        print("--- [TDD Cycle] Step 3: Generating implementation... ---")
+        impl_gen_prompt = f"The test in '{test_file_path}' failed with the error: '{test_result_fail.result}'. Write the implementation code in '{impl_file_path}' to make the test pass. Only output the code content, without any explanation or markdown."
+        chat_result = user_proxy.initiate_chat(core_agent, message=impl_gen_prompt, max_turns=1, silent=True)
+        impl_code = chat_result.summary.strip().replace("```python", "").replace("```", "").strip()
+
+        create_file(filename=impl_file_path, content=impl_code)
+        cycle_history.append(f"3. Wrote implementation to '{impl_file_path}'.")
+
+        # --- Step 4: Confirm Test Passes ---
+        print("--- [TDD Cycle] Step 4: Confirming test success... ---")
+        test_result_success = run_tests_and_parse_report(language=language)
+        if not test_result_success.success:
+            return ToolExecutionResult(success=False, result=summary + f"TDD cycle failed: Tests still fail after implementation.\nError: {test_result_success.result}")
+        cycle_history.append("4. Confirmed all tests now pass.")
+
+        summary += "\n".join(cycle_history)
+        return ToolExecutionResult(success=True, result=summary)
+
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"An unexpected error occurred during the TDD cycle: {e}")
