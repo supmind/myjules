@@ -1,67 +1,53 @@
 import autogen
 
 # --- 代理配置 ---
-
-# LLM 配置字典，用于初始化代理
-# 注意：config_list 将从主应用 app.py 中传入
-llm_config = {
-    "cache_seed": 42,  # 使用缓存以提高效率
-    "temperature": 0,
-}
-
+llm_config = {"cache_seed": 42, "temperature": 0}
 
 # --- 代理定义 ---
-
-# 1. Planner Agent (规划者)
-# 这个代理不执行代码。它的唯一工作是接收任务并创建详细的、分步骤的计划。
 planner = autogen.ConversableAgent(
     name="Planner",
-    system_message="""您是一个专业的项目规划师。您的任务是接收一个高级目标和相关代码上下文，并将其分解成一个结构化的、可执行的工具调用计划。
+    system_message="""您是一位顶级的AI项目经理和软件架构师，坚定地遵循专业的软件工程实践，特别是测试驱动开发（TDD）。您的核心任务是将一个高级开发目标，分解为一个结构化的、包含完整项目管理步骤的、可执行的工具调用计划。
 
 您的输出**必须**是一个格式正确的 JSON 数组，其中每个对象都代表一个工具调用。
-每个对象都必须包含两个键：`tool_name` (字符串) 和 `parameters` (一个包含该工具所有必需参数的字典)。
 
 ---
+### **专业 TDD 工作流指南**
 
-**错误处理与重规划**:
-有时，您会收到一个包含“失败的计划”和“错误信息”的提示。这表示您之前的计划在执行时遇到了问题。
-在这种情况下，您的任务是：
+对于所有新功能的开发或 bug 修复，您的计划**必须**遵循以下完整的生命周期：
+
+1.  **依赖管理 (可选)**: 如果任务需要新的库（例如 `requests`），**第一步**必须是调用 `create_file` 来创建或更新 `requirements.txt`。
+2.  **环境设置 (可选)**: 如果上一步修改了 `requirements.txt`，**下一步**必须是调用 `run_in_bash` 并使用 `pip install -r requirements.txt` 来安装依赖。
+3.  **【红灯】编写失败的测试**: 调用 `create_file` 在 `tests/` 目录下创建一个新的测试文件（例如 `tests/test_auth.py`）。这个测试文件必须包含一个描述功能需求的、但**注定会失败**的测试用例。
+4.  **【验证红灯】运行测试并确认失败**: 调用 `run_tests_and_parse_report` 工具来运行您刚刚创建的测试。您必须预期并处理返回的失败结果（例如 `ImportError`）。
+5.  **【绿灯】编写实现代码**: 调用 `create_file` 或 `replace_function_definition` 来创建或修改**实现代码**（例如 `auth.py`），以满足测试用例的要求。
+6.  **【验证绿灯】再次运行测试**: 再次调用 `run_tests_and_parse_report`，并预期所有测试都会通过，以验证您的实现是正确的。
+
+---
+### **错误处理与重规划**
+
+如果您在执行计划时收到一个包含“失败的计划”和“错误信息”的提示，您的任务是：
 1.  **仔细分析错误信息**：理解为什么上一步操作会失败。
-2.  **修正计划**：生成一个全新的、完整的计划来解决这个问题。不要只提供修改的部分，必须提供一个从头开始的完整新计划。
-    - 如果错误是可恢复的（例如，文件未找到），您的新计划应该包含创建该文件的步骤。
-    - 如果错误是根本性的，您的新计划应该尝试用一种完全不同的方法来完成原始任务。
+2.  **修正计划**：生成一个全新的、完整的计划来解决这个问题。如果失败是由测试未通过引起的，您的新计划应该专注于修复实现代码，然后再次运行测试以验证修复。
 
-您的最终输出**永远**都必须是一个格式正确的 JSON 数组，即使是在重规划时也是如此。不要在回复中包含任何额外的解释、代码块标记或客套话。""",
+您的最终输出**永远**都必须是一个格式正确的 JSON 数组，不要包含任何额外的解释或代码块标记。""",
     llm_config=llm_config,
 )
 
-# 2. Executor Agent (执行者)
-# 这个代理是实际的工作者。它接收单个具体的任务，并使用其工具来完成任务。
+# Executor Agent is currently not used in the main orchestration loop, but is kept for modularity.
 executor = autogen.AssistantAgent(
     name="Executor",
     system_message="""您是任务执行者。您将接收一个结构化的 JSON 对象，该对象代表一个需要执行的工具调用。
 您的任务是解析这个对象，并使用您可用的工具来完成它。
-
-例如，如果您收到以下指令：
-{"tool_name": "read_file", "parameters": {"filename": "README.md"}}
-
-您应该执行 `read_file` 工具，并将 `filename` 设置为 "README.md"。
-
 在完成每个任务后，报告您的结果。如果出现问题，请报告错误。""",
     llm_config=llm_config,
 )
 
-# 3. User Proxy Agent (用户代理)
-# 这个代理代表真实用户。它发起对话，并可以配置为执行代码或请求人工输入。
 user_proxy = autogen.UserProxyAgent(
     name="UserProxy",
-    human_input_mode="TERMINATE",  # 在需要时请求人工输入，输入 "exit" 终止
+    human_input_mode="TERMINATE",
     max_consecutive_auto_reply=10,
     is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"),
-    code_execution_config={
-        "work_dir": "workspace", # 指定代码执行的工作目录
-        "use_docker": False, # 为简单起见不使用 Docker
-    },
+    code_execution_config={"work_dir": "workspace", "use_docker": False},
 )
 
 def assign_llm_config(config_list: list):

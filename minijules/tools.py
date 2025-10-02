@@ -3,16 +3,37 @@ import subprocess
 from pathlib import Path
 from tree_sitter_language_pack import get_language, get_parser
 import git
+import xml.etree.ElementTree as ET
 
 # 导入新的标准化结果类
 from minijules.result import ToolExecutionResult
 
 # --- 多语言配置中心 ---
 LANGUAGE_CONFIG = {
-    ".py": {"language": "python", "function_node_type": "function_definition", "class_node_type": "class_definition"},
-    ".js": {"language": "javascript", "function_node_types": ["function_declaration", "method_definition", "variable_declarator"], "class_node_type": "class_declaration"},
-    ".go": {"language": "go", "function_node_type": "function_declaration", "class_node_type": "type_spec"},
-    ".rs": {"language": "rust", "function_node_type": "function_item", "class_node_type": "struct_item"}
+    ".py": {
+        "language": "python",
+        "function_node_type": "function_definition",
+        "class_node_type": "class_definition",
+        "test_command": "python3 -m pytest . --junitxml=test-report.xml"
+    },
+    ".js": {
+        "language": "javascript",
+        "function_node_types": ["function_declaration", "method_definition", "variable_declarator"],
+        "class_node_type": "class_declaration",
+        "test_command": "npm install && npx jest --reporters=default --reporters=jest-junit"
+    },
+    ".go": {
+        "language": "go",
+        "function_node_type": "function_declaration",
+        "class_node_type": "type_spec",
+        "test_command": "go get -t -v ./... && go install github.com/jstemmer/go-junit-report/v2@latest && go test -v ./... | go-junit-report -set-exit-code > test-report.xml"
+    },
+    ".rs": {
+        "language": "rust",
+        "function_node_type": "function_item",
+        "class_node_type": "struct_item",
+        "test_command": "cargo test -- --format xml > test-report.xml"
+    }
 }
 
 WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
@@ -152,9 +173,56 @@ def run_in_bash(command: str) -> ToolExecutionResult:
         output = f"STDOUT:\n{result.stdout}\n" if result.stdout else ""
         output += f"STDERR:\n{result.stderr}\n" if result.stderr else ""
         output += f"返回码: {result.returncode}"
-        # 命令的成功与否由调用者判断，工具本身执行成功
         return ToolExecutionResult(success=True, result=output)
     except Exception as e: return ToolExecutionResult(success=False, result=f"运行命令时发生意外错误: {e}")
+
+def run_tests_and_parse_report(language: str) -> ToolExecutionResult:
+    """根据指定的语言运行测试，生成 JUnit-XML 报告，然后解析它以提供结构化的测试结果。"""
+    try:
+        file_extension = f".{language}"
+        if file_extension not in LANGUAGE_CONFIG:
+            return ToolExecutionResult(success=False, result=f"错误：不支持的测试语言: {language}")
+
+        test_command = LANGUAGE_CONFIG[file_extension]["test_command"]
+        report_path = WORKSPACE_DIR / "test-report.xml"
+
+        subprocess.run(
+            test_command, shell=True, cwd=WORKSPACE_DIR, capture_output=True, text=True, check=False
+        )
+
+        if not report_path.exists():
+            return ToolExecutionResult(success=False, result="错误：测试报告文件 'test-report.xml' 未生成。可能是测试运行器本身失败了。")
+
+        tree = ET.parse(report_path)
+        root = tree.getroot()
+        testsuite = root.find('testsuite')
+
+        failures = int(testsuite.get('failures', 0))
+        errors = int(testsuite.get('errors', 0))
+        total_tests = int(testsuite.get('tests', 0))
+
+        if failures == 0 and errors == 0:
+            return ToolExecutionResult(success=True, result=f"所有 {total_tests} 个测试都已通过。")
+
+        failure_summary = [f"测试失败：{failures+errors}/{total_tests} 个测试用例未通过。"]
+        for testcase in testsuite.findall('testcase'):
+            failure = testcase.find('failure')
+            if failure is not None:
+                failure_details = (f"  - 测试用例: {testcase.get('classname')}.{testcase.get('name')}\n"
+                                   f"    失败信息: {failure.get('message')}\n"
+                                   f"    详细信息:\n{failure.text.strip()}")
+                failure_summary.append(failure_details)
+
+            error = testcase.find('error')
+            if error is not None:
+                error_details = (f"  - 测试用例: {testcase.get('classname')}.{testcase.get('name')}\n"
+                                 f"    错误信息: {error.get('message')}\n"
+                                 f"    详细信息:\n{error.text.strip()}")
+                failure_summary.append(error_details)
+
+        return ToolExecutionResult(success=False, result="\n".join(failure_summary))
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"运行测试和解析报告时发生意外错误: {e}")
 
 def git_status() -> ToolExecutionResult:
     try:
