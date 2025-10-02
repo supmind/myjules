@@ -11,7 +11,8 @@ from typing import List, Dict, Any
 # 定义工作区和数据库路径
 WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
 DB_PATH = Path(__file__).parent.resolve() / "chroma_db"
-COLLECTION_NAME = "code_index"
+CODE_COLLECTION_NAME = "code_index"
+MEMORY_COLLECTION_NAME = "memory_index"
 
 # 加载句子转换器模型 (已升级)
 model = SentenceTransformer('BAAI/bge-large-en-v1.5')
@@ -99,9 +100,9 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
 
 def index_workspace():
     client = chromadb.PersistentClient(path=str(DB_PATH))
-    try: client.delete_collection(name=COLLECTION_NAME)
+    try: client.delete_collection(name=CODE_COLLECTION_NAME)
     except Exception: pass
-    collection = client.create_collection(name=COLLECTION_NAME)
+    collection = client.get_or_create_collection(name=CODE_COLLECTION_NAME)
 
     all_chunks = [chunk for fp in WORKSPACE_DIR.rglob('*') if fp.is_file() and fp.suffix in LANGUAGES for chunk in extract_chunks(fp, LANGUAGES[fp.suffix])]
 
@@ -117,10 +118,47 @@ def index_workspace():
 def retrieve_context(query: str, n_results: int = 3) -> List[str]:
     client = chromadb.PersistentClient(path=str(DB_PATH))
     try:
-        collection = client.get_collection(name=COLLECTION_NAME)
+        collection = client.get_collection(name=CODE_COLLECTION_NAME)
         results = collection.query(query_embeddings=model.encode([query]).tolist(), n_results=n_results)
         return results['documents'][0] if results and results.get('documents') else []
     except ValueError:
+        return []
+
+def save_memory(task_summary: str, final_code_diff: str):
+    """Saves the summary of a completed task to the memory collection."""
+    try:
+        client = chromadb.PersistentClient(path=str(DB_PATH))
+        collection = client.get_or_create_collection(name=MEMORY_COLLECTION_NAME)
+
+        document = f"任务总结:\n{task_summary}\n\n最终代码变更:\n{final_code_diff}"
+        memory_id = f"memory_{collection.count() + 1}"
+
+        collection.add(
+            documents=[document],
+            ids=[memory_id],
+            embeddings=model.encode([document]).tolist()
+        )
+        print(f"--- ✅ 成功将任务经验存入记忆库 (ID: {memory_id}) ---")
+    except Exception as e:
+        print(f"--- ⚠️ 存入记忆时发生错误: {e} ---")
+
+def retrieve_memory(query: str, n_results: int = 1) -> List[str]:
+    """Retrieves similar past experiences from the memory collection."""
+    try:
+        client = chromadb.PersistentClient(path=str(DB_PATH))
+        collection = client.get_collection(name=MEMORY_COLLECTION_NAME)
+        if collection.count() == 0:
+            return []
+
+        results = collection.query(
+            query_embeddings=model.encode([query]).tolist(),
+            n_results=n_results
+        )
+        return results['documents'][0] if results and results.get('documents') else []
+    except ValueError:
+        return [] # Collection might be empty or not exist
+    except Exception as e:
+        print(f"--- ⚠️ 检索记忆时发生错误: {e} ---")
         return []
 
 if __name__ == '__main__':

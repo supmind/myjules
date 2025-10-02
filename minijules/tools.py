@@ -64,6 +64,91 @@ def _find_node_recursively(node, criteria):
         if found: return found
     return None
 
+def _get_node_name(node, node_type, lang_config):
+    """A helper function to robustly get the name of a class or function node."""
+    if lang_config["language"] == 'javascript' and node_type == 'variable_declarator':
+        name_node = node.child_by_field_name('name')
+        value_node = node.child_by_field_name('value')
+        if name_node and value_node and value_node.type == 'arrow_function':
+            return name_node.text.decode('utf8')
+    elif node_type in lang_config.get("function_node_types", []) or node_type == lang_config.get("class_node_type"):
+         name_node = node.child_by_field_name("name")
+         if name_node:
+             return name_node.text.decode('utf8')
+    # Go/Rust special cases for structs/types
+    elif node_type in ['type_spec', 'struct_item']:
+        name_node = node.children[0] if node.children else None
+        if name_node:
+            return name_node.text.decode('utf8')
+    return None
+
+def _traverse_for_structure(node, lang_config, indent_level=1):
+    """Helper to traverse AST and build a structure string."""
+    structure_list = []
+    indent = "  " * indent_level
+
+    class_type = lang_config.get("class_node_type")
+    func_types = lang_config.get("function_node_types", [])
+
+    is_class = node.type == class_type
+    is_func = node.type in func_types
+
+    if is_class or is_func:
+        name = _get_node_name(node, node.type, lang_config)
+        if name:
+            node_kind = "class" if is_class else "def"
+            structure_list.append(f"{indent}{node_kind} {name}")
+
+            if is_class:
+                # Find body and recurse
+                body_node = next((c for c in node.children if 'body' in c.type or 'block' in c.type or 'declaration_list' in c.type or 'field_declaration_list' in c.type), None)
+                if not body_node and lang_config['language'] == 'go': # Go specific body search
+                     struct_type_node = next((c for c in node.children if c.type == 'struct_type'), None)
+                     if struct_type_node: body_node = next((c for c in struct_type_node.children if c.type == 'field_declaration_list'), None)
+
+                if body_node:
+                    for child in body_node.children:
+                        structure_list.extend(_traverse_for_structure(child, lang_config, indent_level + 1))
+        return structure_list
+
+    # Default recursion for other nodes
+    for child in node.children:
+        structure_list.extend(_traverse_for_structure(child, lang_config, indent_level))
+
+    return structure_list
+
+def list_project_structure() -> ToolExecutionResult:
+    """
+    Recursively scans the workspace, parses all supported files, and returns a
+    tree-like structure of all classes, functions, and methods.
+    """
+    try:
+        output_lines = ["Project Structure:"]
+
+        for file_path in sorted(WORKSPACE_DIR.rglob('*')):
+            if not file_path.is_file() or file_path.suffix not in LANGUAGE_CONFIG:
+                continue
+
+            relative_path = file_path.relative_to(WORKSPACE_DIR)
+            output_lines.append(f"📁 {relative_path}")
+
+            try:
+                tree, _, lang_config = _get_ast(file_path)
+                # We only traverse from the root's direct children to get top-level definitions
+                for node in tree.root_node.children:
+                    symbols = _traverse_for_structure(node, lang_config)
+                    output_lines.extend(symbols)
+            except Exception as e:
+                output_lines.append(f"  (Error parsing file: {e})")
+
+        result = "\n".join(output_lines)
+        if len(output_lines) == 1:
+            result = "No supported files found in the workspace."
+
+        return ToolExecutionResult(success=True, result=result)
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"Failed to list project structure: {e}")
+
 def replace_function_definition(filename: str, function_name: str, new_function_code: str) -> ToolExecutionResult:
     try:
         safe_path = _get_safe_path(filename)
@@ -260,3 +345,55 @@ def git_create_branch(branch_name: str) -> ToolExecutionResult:
         return ToolExecutionResult(success=True, result=f"已成功创建并切换到新分支: '{branch_name}'。")
     except Exception as e:
         return ToolExecutionResult(success=False, result=f"创建 Git 分支时发生意外错误: {e}")
+
+def manage_dependency(language: str, package_name: str, action: str = "add") -> ToolExecutionResult:
+    """
+    Manages project dependencies for a given language.
+    For python, it modifies requirements.txt. For JS, it would modify package.json.
+    This should be followed by a `run_in_bash` command to install the dependencies.
+
+    :param language: The programming language ('py' or 'js').
+    :param package_name: The name of the package to add or remove.
+    :param action: The action to perform ('add' or 'remove'). Defaults to 'add'.
+    """
+    try:
+        if action not in ["add", "remove"]:
+            return ToolExecutionResult(success=False, result=f"错误: 无效的操作 '{action}'。只允许 'add' 或 'remove'。")
+
+        if language == "py":
+            req_file = _get_safe_path("requirements.txt")
+
+            if action == "add":
+                with req_file.open("a", encoding="utf-8") as f:
+                    f.write(f"\n{package_name}")
+                return ToolExecutionResult(success=True, result=f"已将 '{package_name}' 添加到 requirements.txt。请稍后运行 'pip install'。")
+
+            # Action is 'remove'
+            if not req_file.is_file():
+                 return ToolExecutionResult(success=True, result="requirements.txt 不存在，无需移除。")
+
+            lines = req_file.read_text(encoding="utf-8").splitlines()
+            original_line_count = len(lines)
+            lines = [line for line in lines if not line.strip().startswith(package_name)]
+
+            if len(lines) == original_line_count:
+                return ToolExecutionResult(success=False, result=f"在 requirements.txt 中未找到要移除的包 '{package_name}'。")
+
+            req_file.write_text("\n".join(lines), encoding="utf-8")
+            return ToolExecutionResult(success=True, result=f"已从 requirements.txt 中移除 '{package_name}'。")
+
+        elif language == "js":
+            # For JS, it's often better to just run the command directly.
+            # This tool can be a placeholder or a validator.
+            # For now, we'll just return a message suggesting the correct bash command.
+            if action == "add":
+                cmd = f"npm install {package_name}"
+                return ToolExecutionResult(success=True, result=f"建议：为 JS 依赖运行 `run_in_bash`，命令为: '{cmd}'")
+            else: # remove
+                cmd = f"npm uninstall {package_name}"
+                return ToolExecutionResult(success=True, result=f"建议：为 JS 依赖运行 `run_in_bash`，命令为: '{cmd}'")
+        else:
+            return ToolExecutionResult(success=False, result=f"错误: 不支持的语言 '{language}'。")
+
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"管理依赖时发生意外错误: {e}")

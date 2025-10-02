@@ -1,5 +1,5 @@
 import autogen
-from typing import Dict, List
+from typing import Dict, List, Any
 import json
 import os
 from pathlib import Path
@@ -9,11 +9,12 @@ import argparse
 # 导入项目模块
 import minijules.tools as tools
 import minijules.indexing as indexing
-from minijules.agents import planner, user_proxy, assign_llm_config
+from minijules.agents import core_agent, user_proxy, assign_llm_config
 from minijules.result import ToolExecutionResult
 
 # --- 配置加载 ---
 def load_llm_config():
+    """从 .env 文件或环境变量加载 LLM 配置。"""
     load_dotenv()
     config_list_json = os.environ.get("OAI_CONFIG_LIST")
     if config_list_json:
@@ -25,18 +26,19 @@ def load_llm_config():
     print("错误: LLM 配置未找到。请参考 .env.template 设置您的配置。")
     return None
 
-# --- 智能编排器 ---
-class Orchestrator:
-    def __init__(self, task: str):
+# --- 新的主应用 ---
+class JulesApp:
+    def __init__(self, task: str, auto_mode: bool = False):
         self.task = task
-        self.plan = []
-        self.max_replans = 3
+        self.auto_mode = auto_mode
+        self.work_history: List[str] = []
+        self.max_steps = 30  # 设置最大迭代次数以防止无限循环
         self.tool_map = self._get_tool_map()
-        self.last_failed_plan = None
-        self.last_error_message = None
 
     def _get_tool_map(self) -> Dict:
+        """返回所有可用工具的名称到函数的映射。"""
         return {
+            "list_project_structure": tools.list_project_structure,
             "list_files": tools.list_files,
             "read_file": tools.read_file,
             "create_file": tools.create_file,
@@ -52,96 +54,125 @@ class Orchestrator:
             "git_commit": tools.git_commit,
             "git_create_branch": tools.git_create_branch,
             "run_tests_and_parse_report": tools.run_tests_and_parse_report,
+            "manage_dependency": tools.manage_dependency,
+            "task_complete": self._task_complete,
         }
 
-    def _determine_language(self) -> str:
-        # 这是一个简单的启发式算法。在更复杂的场景中，可以分析工作区中的文件类型。
-        # TODO: 实现更智能的语言检测。
-        return "py"
+    def _construct_prompt(self, rag_context: str, memory_context: str) -> str:
+        """构建将发送给 CoreAgent 的提示, 包含所有上下文信息。"""
+        history_section = "\n".join(self.work_history) if self.work_history else "还没有任何动作被执行。"
+        memory_section = memory_context if memory_context else "无相关历史经验。"
+        return f"""
+### **最终目标**
+{self.task}
 
-    def _generate_plan(self, context: str, failed_plan: List = None, error_message: str = None):
-        prompt = f"---\n相关代码上下文:\n{context}\n\n---\n原始任务:\n{self.task}\n"
-        if failed_plan and error_message:
-            prompt += f"\n---\n失败的计划:\n{json.dumps(failed_plan, indent=2, ensure_ascii=False)}\n\n---\n错误信息:\n{error_message}\n\n---\n指令:\n以上计划失败。请分析错误并生成一个修正后的全新完整计划。"
-        else:
-            prompt += "\n--- 指令 ---\n请为以上任务制定一个分步计划。\n"
+### **相关历史经验**
+---
+{memory_section}
+---
 
-        print("--- 正在请求 Planner 生成计划... ---")
-        chat_result = user_proxy.initiate_chat(planner, message=prompt, max_turns=1, silent=True)
-        plan_text = chat_result.summary.strip()
+### **相关代码上下文**
+---
+{rag_context}
+---
+
+### **工作历史**
+---
+{history_section}
+---
+"""
+
+    def _execute_tool(self, tool_name: str, parameters: Dict) -> ToolExecutionResult:
+        """执行指定的工具并返回结果。"""
+        if tool_name not in self.tool_map:
+            return ToolExecutionResult(success=False, result=f"错误: 工具 '{tool_name}' 不存在。")
+
+        tool_function = self.tool_map[tool_name]
         try:
-            if plan_text.startswith("```json"): plan_text = plan_text[7:-3].strip()
-            self.plan = json.loads(plan_text)
-            print("--- 成功生成新计划 ---")
-            for i, step in enumerate(self.plan):
-                print(f"{i+1}. 工具: {step.get('tool_name')}, 参数: {step.get('parameters')}")
-            return True
-        except json.JSONDecodeError:
-            print("错误：无法从 Planner 获取有效的 JSON 计划。原始回复:", plan_text)
-            self.plan = []
-            return False
+            if tool_name == "run_tests_and_parse_report" and "language" not in parameters:
+                parameters["language"] = "py"
+            return tool_function(**parameters)
+        except Exception as e:
+            return ToolExecutionResult(success=False, result=f"执行工具 '{tool_name}' 时发生意外的 Python 异常: {e}")
+
+    def _task_complete(self, summary: str) -> ToolExecutionResult:
+        """处理任务完成信号，并保存任务经验到记忆库。"""
+        print("--- 正在保存任务经验到记忆库... ---")
+        final_diff_result = tools.git_diff()
+        final_diff = final_diff_result.result if final_diff_result.success else "获取代码变更失败。"
+        full_summary = f"原始任务: {self.task}\n工作总结: {summary}\n\n工作历史:\n" + "\n".join(self.work_history)
+        indexing.save_memory(task_summary=full_summary, final_code_diff=final_diff)
+        return ToolExecutionResult(success=True, result=f"任务已成功完成，并已存入记忆库: {summary}")
 
     def run(self):
         print(f"--- 接收到任务 ---\n{self.task}\n" + "="*20)
+
+        print("--- 正在索引工作区以获取代码上下文... ---")
         indexing.index_workspace()
-        context = "\n\n".join(indexing.retrieve_context(self.task, n_results=5) or ["无相关代码上下文。"])
-        if not self._generate_plan(context):
-            print("任务因初始规划失败而中止。"); return
 
-        replan_count = 0
-        while replan_count <= self.max_replans:
-            execution_successful = self._execute_plan()
-            if execution_successful:
-                print("\n--- ✅ 所有计划步骤均已成功完成 ---"); break
+        print("--- 正在检索相关历史经验... ---")
+        retrieved_memories = indexing.retrieve_memory(self.task, n_results=1)
+        memory_context = "\n\n".join(retrieved_memories) if retrieved_memories else None
+        if memory_context:
+            print("> 发现相关历史经验。")
 
-            replan_count += 1
-            if replan_count > self.max_replans:
-                print("已达到最大重规划次数，任务中止。"); break
+        for step in range(self.max_steps):
+            print(f"\n--- 思考循环: 第 {step + 1}/{self.max_steps} 步 ---")
 
-            print(f"\n--- 侦测到错误，正在尝试重规划 ({replan_count}/{self.max_replans}) ---")
-            if not self._generate_plan(context, self.last_failed_plan, self.last_error_message):
-                print("任务因重规划失败而中止。"); break
+            last_action_summary = self.work_history[-1] if self.work_history else "开始任务"
+            dynamic_query = f"原始任务: {self.task}\n最新进展: {last_action_summary}"
+            print(f"> 动态RAG查询: {dynamic_query[:150]}...")
+            rag_context = "\n\n".join(indexing.retrieve_context(dynamic_query, n_results=3) or ["无相关代码上下文。"])
 
-        print("--- 任务流程结束 ---")
+            prompt = self._construct_prompt(rag_context, memory_context)
 
-    def _execute_plan(self) -> bool:
-        for i, step in enumerate(self.plan):
-            tool_name = step.get("tool_name")
-            parameters = step.get("parameters", {})
+            chat_result = user_proxy.initiate_chat(core_agent, message=prompt, max_turns=1, silent=False)
+            agent_reply = chat_result.summary.strip()
 
-            if tool_name == "run_tests_and_parse_report" and "language" not in parameters:
-                parameters["language"] = self._determine_language()
-
-            print(f"\n--- 执行步骤 {i+1}/{len(self.plan)} ---\n> 工具: {tool_name}\n> 参数: {json.dumps(parameters, indent=2, ensure_ascii=False)}")
-            if input("✅ 按 Enter键 继续, 或输入 'exit' 退出: ").lower() == 'exit':
-                print("用户中止了任务."); return False
-
-            tool_function = self.tool_map.get(tool_name)
-            if not tool_function:
-                self.last_failed_plan, self.last_error_message = self.plan, f"错误：工具 '{tool_name}' 不存在。"
-                print(self.last_error_message); return False
             try:
-                exec_result: ToolExecutionResult = tool_function(**parameters)
-            except Exception as e:
-                exec_result = ToolExecutionResult(success=False, result=f"执行工具 '{tool_name}' 时发生意外的 Python 异常: {e}")
+                if agent_reply.startswith("```json"): agent_reply = agent_reply[7:-3].strip()
+                action = json.loads(agent_reply)
+                tool_name = action.get("tool_name")
+                parameters = action.get("parameters", {})
+            except json.JSONDecodeError:
+                print(f"错误: CoreAgent 返回了无效的JSON。正在将此错误反馈给代理。")
+                self.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复不是一个有效的JSON对象。请严格遵循格式要求。")
+                continue
 
-            print(f"--- 执行结果 ---\n{exec_result.result}\n====================")
-            if not exec_result.success:
-                self.last_failed_plan, self.last_error_message = self.plan, exec_result.result
-                return False
-        return True
+            print(f"> 下一步动作: {tool_name}")
+            print(f"> 参数:\n{json.dumps(parameters, indent=2, ensure_ascii=False)}")
+
+            if not self.auto_mode:
+                if input("✅ 按 Enter键 继续, 或输入 'exit' 退出: ").lower() == 'exit':
+                    print("用户中止了任务。"); break
+
+            exec_result = self._execute_tool(tool_name, parameters)
+            print(f"--- 结果 ---\n{exec_result.result}\n" + "="*20)
+
+            history_entry = f"动作: {tool_name} with params {json.dumps(parameters, ensure_ascii=False)}\n结果: [{'成功' if exec_result.success else '失败'}] {exec_result.result}"
+            self.work_history.append(history_entry)
+
+            if tool_name == "task_complete":
+                print("\n--- ✅ CoreAgent 已确认任务完成 ---")
+                break
+        else:
+            print("\n--- ⚠️ 已达到最大步数限制，任务中止 ---")
+
+        print("\n--- 任务流程结束 ---")
+
 
 def main():
     config_list = load_llm_config()
     if not config_list: return
     assign_llm_config(config_list)
 
-    parser = argparse.ArgumentParser(description="MiniJules: 一个AI开发助手")
+    parser = argparse.ArgumentParser(description="MiniJules: 一个AI开发助手 (类Jules架构)")
     parser.add_argument("task", type=str, help="要执行的主要任务描述。")
+    parser.add_argument("--auto", action="store_true", help="启用自主模式，无需手动确认每一步。")
     args = parser.parse_args()
 
-    orchestrator = Orchestrator(task=args.task)
-    orchestrator.run()
+    app = JulesApp(task=args.task, auto_mode=args.auto)
+    app.run()
 
 if __name__ == "__main__":
     main()
