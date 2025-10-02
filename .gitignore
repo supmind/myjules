@@ -1,10 +1,25 @@
-# Ignore Python cache files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Ignore generated directories by MiniJules
-minijules/workspace/
+# ChromaDB database directory
 minijules/chroma_db/
 
-# Ignore the memory log file
-minijules/memory.log
+# Workspace directory for agent operations
+minijules/workspace/
+
+# Scratchpad file used for agent memory
+minijules/workspace/.scratchpad.md
+
+# Local configuration files
+minijules/config.json
+
+# Environment variables file
+.env
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
