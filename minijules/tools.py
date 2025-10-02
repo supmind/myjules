@@ -228,3 +228,16 @@ def git_commit(message: str) -> str:
         repo.config_writer().set_value("user", "email", "minijules@agent.ai").release()
         return f"成功提交变更:\n{repo.git.commit(m=message)}"
     except Exception as e: return f"Git commit 操作失败: {e}"
+
+def git_create_branch(branch_name: str) -> str:
+    """创建一个新的 Git 分支并切换过去。"""
+    try:
+        repo = git.Repo(WORKSPACE_DIR)
+        # 检查工作区是否是一个有效的 Git 仓库
+        if not isinstance(repo, git.Repo):
+             return "错误：工作区不是一个有效的 Git 仓库。"
+        new_branch = repo.create_head(branch_name)
+        new_branch.checkout()
+        return f"已成功创建并切换到新分支: '{branch_name}'。"
+    except Exception as e:
+        return f"创建 Git 分支时发生意外错误: {e}"

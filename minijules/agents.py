@@ -16,14 +16,29 @@ llm_config = {
 # 这个代理不执行代码。它的唯一工作是接收任务并创建详细的、分步骤的计划。
 planner = autogen.ConversableAgent(
     name="Planner",
-    system_message="""您是一个专业的项目规划师。您的任务是接收一个高级目标和相关代码上下文，并将其分解成一个清晰、简洁、可执行的步骤列表。
-您的计划必须是一个编号列表，每一项都是一个独立的、可操作的指令。
-在您的回复中，只包含计划本身，不要有任何额外的解释或客套话。
+    system_message="""您是一个专业的项目规划师。您的任务是接收一个高级目标和相关代码上下文，并将其分解成一个结构化的、可执行的工具调用计划。
 
-重要提示：执行者可以通过 `write_to_scratchpad` 和 `read_scratchpad` 工具使用一个“便签”来在步骤之间传递信息。如果任务复杂，您可以在计划中明确指示执行者使用便签。
+您的输出**必须**是一个格式正确的 JSON 数组，其中每个对象都代表一个工具调用。
+每个对象都必须包含两个键：`tool_name` (字符串) 和 `parameters` (一个包含该工具所有必需参数的字典)。
+
 例如:
-1. 读取文件 `config.json`，并将其中的 `api_key` 值写入便签。
-2. 读取便签中的 `api_key`，并用它来创建一个新的 API 客户端。""",
+[
+    {
+        "tool_name": "create_file",
+        "parameters": {
+            "filename": "src/main.py",
+            "content": "print('Hello, World!')"
+        }
+    },
+    {
+        "tool_name": "run_in_bash",
+        "parameters": {
+            "command": "python3 src/main.py"
+        }
+    }
+]
+
+在您的回复中，只包含这个 JSON 数组，不要有任何额外的解释、代码块标记（如 ```json）或客套话。""",
     llm_config=llm_config,
 )
 
@@ -31,20 +46,15 @@ planner = autogen.ConversableAgent(
 # 这个代理是实际的工作者。它接收单个具体的任务，并使用其工具来完成任务。
 executor = autogen.AssistantAgent(
     name="Executor",
-    system_message="""您是任务执行者。您将接收一个具体的任务，并使用您可用的工具来完成它。
-在完成每个任务后，报告您的结果。如果出现问题，请报告错误。
+    system_message="""您是任务执行者。您将接收一个结构化的 JSON 对象，该对象代表一个需要执行的工具调用。
+您的任务是解析这个对象，并使用您可用的工具来完成它。
 
-**代码修改指南**:
-- **精确替换**: 当需要修改或重写一个现有函数时，**必须**使用 `replace_function_definition` 工具。它通过函数名进行定位，比简单的文本搜索更可靠。
-- **精确插入**: 当需要向一个现有类添加新方法或属性时，**必须**使用 `insert_into_class_body` 工具。它能精确地将代码插入到类的末尾。
-- **避免使用通用文本替换来修改代码**，因为那很脆弱且容易出错。
+例如，如果您收到以下指令：
+{"tool_name": "read_file", "parameters": {"filename": "README.md"}}
 
-**您的工作流程应该是：**
-1.  **思考**: 首先，考虑是否需要从便签中读取信息。使用 `read_scratchpad` 工具来获取之前步骤留下的上下文。
-2.  **执行**: 使用您的其他工具来完成当前任务。优先使用 `replace_function_definition` 和 `insert_into_class_body` 来进行代码修改。
-3.  **记录**: 如果您发现了任何对后续步骤有用的信息（例如，文件名、代码片段、配置值等），请使用 `write_to_scratchpad` 工具将其记录下来。
+您应该执行 `read_file` 工具，并将 `filename` 设置为 "README.md"。
 
-始终优先使用便签来维持任务的连续性。""",
+在完成每个任务后，报告您的结果。如果出现问题，请报告错误。""",
     llm_config=llm_config,
 )
 
