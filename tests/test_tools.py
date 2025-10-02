@@ -116,3 +116,64 @@ def test_run_in_bash():
     assert "STDOUT:" in result
     assert "hello from bash" in result
     assert "返回码: 0" in result
+
+# --- AST 工具的测试用例 ---
+
+# 用于 AST 操作的示例 Python 文件内容
+SAMPLE_AST_FILE_CONTENT = """
+class MyCalculator:
+    def add(self, a, b):
+        \"\"\"这是一个原始的 add 函数。\"\"\"
+        return a + b
+
+def standalone_function():
+    \"\"\"一个独立的函数。\"\"\"
+    return "original"
+"""
+
+def test_replace_function_definition_successfully():
+    """测试 replace_function_definition 是否能正确替换一个独立的函数。"""
+    filename = "ast_test_file.py"
+    tools.create_file(filename, SAMPLE_AST_FILE_CONTENT)
+
+    new_function_code = """def standalone_function():
+    \"\"\"这是一个新的函数。\"\"\"
+    return "replaced"
+"""
+    # Action
+    result = tools.replace_function_definition(filename, "standalone_function", new_function_code)
+
+    # Assert
+    assert "成功替换" in result
+
+    # 验证文件内容
+    content = tools.read_file(filename)
+    assert "这是一个新的函数" in content
+    assert "这是一个原始的 add 函数" in content  # 确保文件的其他部分未受影响
+
+    # 清理
+    tools.delete_file(filename)
+
+
+def test_insert_into_class_body_successfully():
+    """测试 insert_into_class_body 是否能正确地向类中插入一个新方法。"""
+    filename = "ast_test_file.py"
+    tools.create_file(filename, SAMPLE_AST_FILE_CONTENT)
+
+    new_method_code = """def subtract(self, a, b):
+    \"\"\"这是一个新的 subtract 函数。\"\"\"
+    return a - b
+"""
+    # Action
+    result = tools.insert_into_class_body(filename, "MyCalculator", new_method_code)
+
+    # Assert
+    assert "成功插入" in result
+
+    # 验证文件内容
+    content = tools.read_file(filename)
+    assert "这是一个新的 subtract 函数" in content
+    assert "这是一个原始的 add 函数" in content  # 确保文件的其他部分未受影响
+
+    # 清理
+    tools.delete_file(filename)

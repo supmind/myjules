@@ -58,10 +58,12 @@ executor.register_function(
         "read_file": tools.read_file,
         "create_file": tools.create_file,
         "delete_file": tools.delete_file,
-        "replace_code_block": tools.replace_code_block,
         "write_to_scratchpad": tools.write_to_scratchpad,
         "read_scratchpad": tools.read_scratchpad,
         "run_in_bash": tools.run_in_bash,
+        # AST 代码编辑工具 (新)
+        "replace_function_definition": tools.replace_function_definition,
+        "insert_into_class_body": tools.insert_into_class_body,
         # Git 工具
         "git_status": tools.git_status,
         "git_diff": tools.git_diff,

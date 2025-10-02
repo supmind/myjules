@@ -83,31 +83,110 @@ def create_file(filename: str, content: str) -> str:
         return f"创建文件时发生意外错误: {e}"
 
 
-def replace_code_block(filename: str, search_block: str, replace_block: str) -> str:
+from tree_sitter_language_pack import get_language, get_parser
+
+def _get_ast(filepath: Path) -> (any, bytes):
+    """辅助函数：解析文件并返回 AST 和原始内容。"""
+    # 目前仅支持 Python
+    language = get_language('python')
+    parser = get_parser('python')
+
+    content_bytes = filepath.read_bytes()
+    tree = parser.parse(content_bytes)
+    return tree, content_bytes
+
+def _find_node_recursively(node, criteria):
+    """一个辅助函数，用于在 AST 中递归地查找满足条件的节点。"""
+    if criteria(node):
+        return node
+    for child in node.children:
+        found_node = _find_node_recursively(child, criteria)
+        if found_node:
+            return found_node
+    return None
+
+def replace_function_definition(filename: str, function_name: str, new_function_code: str) -> str:
     """
-    用一个代码块替换文件中的另一个代码块。
-    这比简单的字符串替换更精确、更安全。
+    通过递归遍历 AST 来精确地替换一个函数的定义。
     """
     try:
         safe_path = _get_safe_path(filename)
         if not safe_path.is_file():
             return f"错误：文件 '{filename}' 未找到。"
 
-        original_content = safe_path.read_text(encoding='utf-8')
+        tree, original_bytes = _get_ast(safe_path)
 
-        if search_block not in original_content:
-            return f"错误: 在文件 '{filename}' 中未找到要替换的目标代码块。"
+        def find_function_criteria(node):
+            if node.type == 'function_definition':
+                name_node = node.child_by_field_name("name")
+                if name_node and name_node.text.decode('utf8') == function_name:
+                    return True
+            return False
 
-        # 执行精确的代码块替换
-        new_content = original_content.replace(search_block, replace_block)
+        node_to_replace = _find_node_recursively(tree.root_node, find_function_criteria)
 
-        safe_path.write_text(new_content, encoding='utf-8')
+        if not node_to_replace:
+            return f"错误: 在 '{filename}' 中未找到名为 '{function_name}' 的函数。"
 
-        return f"文件 '{filename}' 中的代码块已成功替换。"
-    except ValueError as e:
-        return str(e)
+        start_byte = node_to_replace.start_byte
+        end_byte = node_to_replace.end_byte
+
+        new_bytes = original_bytes[:start_byte] + new_function_code.encode('utf8') + original_bytes[end_byte:]
+        safe_path.write_bytes(new_bytes)
+
+        return f"函数 '{function_name}' 在 '{filename}' 中已成功替换。"
     except Exception as e:
-        return f"替换代码块时发生意外错误: {e}"
+        return f"使用 AST 替换函数时发生意外错误: {e}"
+
+def insert_into_class_body(filename: str, class_name: str, code_to_insert: str) -> str:
+    """
+    通过递归遍历 AST 在一个类的末尾插入代码。
+    """
+    try:
+        safe_path = _get_safe_path(filename)
+        if not safe_path.is_file():
+            return f"错误：文件 '{filename}' 未找到。"
+
+        tree, original_bytes = _get_ast(safe_path)
+
+        def find_class_criteria(node):
+            if node.type == 'class_definition':
+                name_node = node.child_by_field_name("name")
+                if name_node and name_node.text.decode('utf8') == class_name:
+                    return True
+            return False
+
+        class_node = _find_node_recursively(tree.root_node, find_class_criteria)
+
+        if not class_node:
+            return f"错误: 在 '{filename}' 中未找到名为 '{class_name}' 的类。"
+
+        body_node = class_node.child_by_field_name("body")
+        if not body_node:
+            return f"错误: 在 '{filename}' 中找到类 '{class_name}'，但它没有主体。"
+
+        # 确定正确的缩进和插入点
+        if body_node.named_child_count > 0:
+            last_child = body_node.named_children[-1]
+            indentation_level = last_child.start_point[1]
+            insertion_point = last_child.end_byte
+            # 在最后一个节点后插入一个换行符，以确保格式正确
+            code_to_insert = "\n" + code_to_insert
+        else: # 如果类是空的 (只有 pass 或 docstring)
+            indentation_level = class_node.start_point[1] + 4
+            insertion_point = body_node.start_byte + 1
+            # 在类主体开头插入一个换行符
+            code_to_insert = "\n" + code_to_insert
+
+        indentation = " " * indentation_level
+        indented_code_to_insert = "\n".join(indentation + line for line in code_to_insert.splitlines())
+
+        new_bytes = original_bytes[:insertion_point] + indented_code_to_insert.encode('utf8') + original_bytes[insertion_point:]
+        safe_path.write_bytes(new_bytes)
+
+        return f"代码已成功插入到类 '{class_name}' 的主体中。"
+    except Exception as e:
+        return f"使用 AST 插入类主体时发生意外错误: {e}"
 
 
 def delete_file(filename: str) -> str:
