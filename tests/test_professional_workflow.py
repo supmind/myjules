@@ -1,6 +1,6 @@
 import pytest
 import json
-from unittest.mock import MagicMock, ANY
+from unittest.mock import MagicMock
 import os
 import shutil
 from pathlib import Path
@@ -92,6 +92,7 @@ def test_professional_tdd_workflow(mocker, monkeypatch, setup_test_workspace):
     # 3. 监视文件创建和 bash 命令工具
     spy_create_file = mocker.spy(tools, 'create_file')
     spy_run_in_bash = mocker.spy(tools, 'run_in_bash')
+    spy_run_tests = mocker.spy(tools, 'run_tests_and_parse_report')
 
     # 4. 运行主应用逻辑
     app.main()
@@ -103,7 +104,7 @@ def test_professional_tdd_workflow(mocker, monkeypatch, setup_test_workspace):
     # b. 第二次调用 Planner 的提示中是否包含了第一次测试失败的报告
     replan_prompt = mock_planner_chat.call_args_list[1].kwargs['message']
     assert "测试失败" in replan_prompt
-    assert "ImportError" in replan_prompt or "ModuleNotFoundError" in replan_prompt
+    assert "ModuleNotFoundError" in replan_prompt or "ImportError" in replan_prompt
 
     # c. 验证 create_file 的调用
     assert spy_create_file.call_count == 3, "create_file 应该被调用三次（reqs, test, impl）"
@@ -111,5 +112,6 @@ def test_professional_tdd_workflow(mocker, monkeypatch, setup_test_workspace):
     spy_create_file.assert_any_call(filename="tests/test_web.py", content=mocker.ANY)
     spy_create_file.assert_any_call(filename="web.py", content=mocker.ANY)
 
-    # d. 验证 run_in_bash 的调用
+    # d. 验证 run_in_bash 和 run_tests_and_parse_report 的调用
     spy_run_in_bash.assert_called_once_with(command="python3 -m pip install -r requirements.txt")
+    assert spy_run_tests.call_count == 2, "run_tests_and_parse_report 应该被调用两次"
