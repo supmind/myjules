@@ -92,8 +92,15 @@ class JulesApp:
             "git_commit": tools.git_commit,
             "git_create_branch": tools.git_create_branch,
             "retrieve_code_context": tools.retrieve_code_context,
+            "request_user_input": self._request_user_input,
             "task_complete": self._task_complete,
         }
+
+    def _request_user_input(self, message: str) -> ToolExecutionResult:
+        """向用户显示一条消息，并等待他们的文本输入。"""
+        logger.info(f"向用户请求输入: {message}")
+        user_response = input(f"❓ {message}\n> ")
+        return ToolExecutionResult(success=True, result=f"用户提供了以下指导: {user_response}")
 
     def _detect_language(self) -> str:
         """通过扫描工作区中的文件扩展名来自动检测项目的主要语言。"""
