@@ -96,6 +96,36 @@ class JulesApp:
             "task_complete": self._task_complete,
         }
 
+    def _extract_json_from_reply(self, reply: str) -> str | None:
+        """
+        从 LLM 的回复中提取 JSON 字符串。
+        它能处理两种情况:
+        1.  被 ```json ... ``` 包围的 Markdown 代码块。
+        2.  裸露的、从 '{' 开始到 '}' 结束的 JSON 对象。
+        """
+        import re
+        # 模式1: 匹配 ```json ... ``` 代码块
+        # 使用非贪婪匹配来正确处理嵌套或多个JSON块的情况
+        match = re.search(r"```json\s*(.*?)\s*```", reply, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+        # 模式2: 匹配裸露的 JSON 对象
+        # 寻找第一个 '{' 和最后一个 '}' 以包含整个对象
+        try:
+            start_index = reply.find('{')
+            end_index = reply.rfind('}')
+            if start_index != -1 and end_index != -1 and start_index < end_index:
+                potential_json = reply[start_index:end_index+1]
+                # 尝试解析以验证它是一个有效的JSON
+                json.loads(potential_json)
+                return potential_json.strip()
+        except json.JSONDecodeError:
+            # 如果裸露的字符串不是有效的JSON，则忽略
+            pass
+
+        return None
+
     def _request_user_input(self, message: str) -> ToolExecutionResult:
         """向用户显示一条消息，并等待他们的文本输入。"""
         logger.info(f"向用户请求输入: {message}")
@@ -172,9 +202,15 @@ class JulesApp:
             chat_result = user_proxy.initiate_chat(core_agent, message=prompt, max_turns=1, silent=False)
             agent_reply = chat_result.summary.strip()
 
+            # --- 新的、更健壮的JSON提取逻辑 ---
+            json_str = self._extract_json_from_reply(agent_reply)
+            if not json_str:
+                logger.error("在 CoreAgent 的回复中找不到有效的JSON对象。正在将此错误反馈给代理。")
+                self.state.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复中没有找到JSON对象。请严格遵循格式要求。")
+                continue
+
             try:
-                if agent_reply.startswith("```json"): agent_reply = agent_reply[7:-3].strip()
-                action = json.loads(agent_reply)
+                action = json.loads(json_str)
                 tool_name = action.get("tool_name")
                 parameters = action.get("parameters", {})
             except json.JSONDecodeError:
