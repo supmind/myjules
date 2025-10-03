@@ -2,8 +2,7 @@
     ".py": {
         "language": "python",
         "function_node_type": "function_definition",
-        "class_node_type": "class_definition",
-        "test_command": "python3 -m pytest . --junitxml=test-report.xml"
+        "class_node_type": "class_definition"
     },
     ".js": {
         "language": "javascript",
@@ -12,19 +11,16 @@
             "method_definition",
             "variable_declarator"
         ],
-        "class_node_type": "class_declaration",
-        "test_command": "npm install && npx jest --reporters=default --reporters=jest-junit"
+        "class_node_type": "class_declaration"
     },
     ".go": {
         "language": "go",
         "function_node_type": "function_declaration",
-        "class_node_type": "type_spec",
-        "test_command": "go get -t -v ./... && go install github.com/jstemmer/go-junit-report/v2@latest && go test -v ./... | go-junit-report -set-exit-code > test-report.xml"
+        "class_node_type": "type_spec"
     },
     ".rs": {
         "language": "rust",
         "function_node_type": "function_item",
-        "class_node_type": "struct_item",
-        "test_command": "cargo test -- --format xml > test-report.xml"
+        "class_node_type": "struct_item"
     }
 }
