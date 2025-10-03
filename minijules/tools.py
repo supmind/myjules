@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 import git
 import json
+import re
 
 # 导入 AutoGen v0.4 相关模块
 from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
@@ -134,14 +135,72 @@ def read_file(filename: str) -> str:
         return safe_path.read_text(encoding='utf-8')
     except Exception as e: return f"读取文件时发生意外错误: {e}"
 
-def create_file(filename: str, content: str) -> str:
-    """创建或覆盖一个文件。"""
+def create_file_with_block(filepath: str, content: str) -> str:
+    """
+    创建一个新文件。如果文件已存在，将返回错误。
+    """
     try:
-        safe_path = _get_safe_path(filename)
+        safe_path = _get_safe_path(filepath)
+        if safe_path.exists():
+            return f"错误: 文件 '{filepath}' 已存在。请使用 'overwrite_file_with_block' 或 'replace_with_git_merge_diff' 进行修改。"
         safe_path.parent.mkdir(parents=True, exist_ok=True)
         safe_path.write_text(content, encoding='utf-8')
-        return f"文件 '{filename}' 已成功创建/更新。"
-    except Exception as e: return f"创建文件时发生意外错误: {e}"
+        return f"文件 '{filepath}' 已成功创建。"
+    except Exception as e:
+        return f"创建文件时发生意外错误: {e}"
+create_file_with_block.is_dangerous = True
+
+def overwrite_file_with_block(filepath: str, content: str) -> str:
+    """
+    用新内容完全覆盖一个现有文件。
+    """
+    try:
+        safe_path = _get_safe_path(filepath)
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_path.write_text(content, encoding='utf-8')
+        return f"文件 '{filepath}' 已被成功覆盖。"
+    except Exception as e:
+        return f"覆盖文件时发生意外错误: {e}"
+overwrite_file_with_block.is_dangerous = True
+
+def replace_with_git_merge_diff(filepath: str, content: str) -> str:
+    """
+    对现有文件执行搜索和替换操作。
+    使用Git风格的合并冲突标记来指定要查找和替换的内容。
+    例如:
+    <<<<<<< SEARCH
+    要被替换的旧代码
+    =======
+    替换后的新代码
+    >>>>>>> REPLACE
+    """
+    try:
+        safe_path = _get_safe_path(filepath)
+        if not safe_path.is_file():
+            return f"错误：文件 '{filepath}' 未找到。"
+
+        original_content = safe_path.read_text(encoding='utf-8')
+
+        # 解析搜索和替换块
+        match = re.search(r'<<<<<<< SEARCH\n(.*?)\n=======\n(.*?)\n>>>>>>> REPLACE', content, re.DOTALL)
+        if not match:
+            return "错误: 输入内容未使用正确的 'SEARCH/REPLACE' 格式。"
+
+        search_block = match.group(1)
+        replace_block = match.group(2)
+
+        # 使用 re.sub 来确保只替换一次，并处理可能存在的特殊字符
+        new_content, num_replacements = re.subn(re.escape(search_block), replace_block, original_content, count=1)
+
+        if num_replacements == 0:
+            return f"错误: 'SEARCH' 块在文件 '{filepath}' 中未找到。"
+
+        safe_path.write_text(new_content, encoding='utf-8')
+
+        return f"文件 '{filepath}' 已成功更新。"
+    except Exception as e:
+        return f"更新文件时发生意外错误: {e}"
+replace_with_git_merge_diff.is_dangerous = True
 
 def delete_file(filename: str) -> str:
     """删除一个文件。"""
@@ -151,9 +210,10 @@ def delete_file(filename: str) -> str:
         safe_path.unlink()
         return f"文件 '{filename}' 已成功删除。"
     except Exception as e: return f"删除文件时发生意外错误: {e}"
+delete_file.is_dangerous = True
 
-def run_in_bash(command: str) -> str:
-    """在 bash 中运行命令。"""
+def run_in_bash_session(command: str) -> str:
+    """在 bash 会话中运行命令。"""
     try:
         result = subprocess.run(command, shell=True, cwd=WORKSPACE_DIR, capture_output=True, text=True, check=False)
         output = f"STDOUT:\n{result.stdout}\n" if result.stdout else ""
@@ -161,6 +221,7 @@ def run_in_bash(command: str) -> str:
         output += f"返回码: {result.returncode}"
         return output
     except Exception as e: return f"运行命令时发生意外错误: {e}"
+run_in_bash_session.is_dangerous = True
 
 def apply_patch(filename: str, patch_content: str) -> str:
     """应用一个补丁。"""
@@ -172,6 +233,7 @@ def apply_patch(filename: str, patch_content: str) -> str:
             return f"应用补丁失败 (返回码: {result.returncode}):\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         return f"补丁已成功应用于 '{filename}'。"
     except Exception as e: return f"应用补丁时发生意外错误: {e}"
+apply_patch.is_dangerous = True
 
 def git_status() -> str:
     """获取 git 状态。"""
@@ -196,6 +258,7 @@ def git_add(filepath: str) -> str:
         repo.git.add(str(_get_safe_path(filepath)))
         return f"文件 '{filepath}' 已成功添加到暂存区。"
     except Exception as e: return f"Git add 操作失败: {e}"
+git_add.is_dangerous = True
 
 def git_commit(message: str) -> str:
     """git commit。"""
@@ -205,6 +268,7 @@ def git_commit(message: str) -> str:
         repo.config_writer().set_value("user", "email", GIT_AUTHOR_EMAIL).release()
         return f"成功提交变更:\n{repo.git.commit(m=message)}"
     except Exception as e: return f"Git commit 操作失败: {e}"
+git_commit.is_dangerous = True
 
 def git_create_branch(branch_name: str) -> str:
     """创建 git 分支。"""
@@ -214,3 +278,4 @@ def git_create_branch(branch_name: str) -> str:
         new_branch.checkout()
         return f"已成功创建并切换到新分支: '{branch_name}'。"
     except Exception as e: return f"创建 Git 分支时发生意外错误: {e}"
+git_create_branch.is_dangerous = True

@@ -27,7 +27,7 @@ def test_apply_patch_success():
     filename = "patch_me.txt"
     original_content = "line 1\nline 2\nline 3\n"
     patch_content = (
-        f"--- a/{filename}\n"  # a/ and b/ prefixes are standard in diffs
+        f"--- a/{filename}\n"
         f"+++ b/{filename}\n"
         "@@ -1,3 +1,3 @@\n"
         " line 1\n"
@@ -38,7 +38,7 @@ def test_apply_patch_success():
     expected_content = "line 1\nline two\nline 3\n"
 
     # 1. 创建初始文件
-    create_result = tools.create_file(filename, original_content)
+    create_result = tools.overwrite_file_with_block(filename, original_content)
     assert "成功" in create_result, f"测试设置失败: 无法创建文件: {create_result}"
 
     # 2. 应用补丁
@@ -64,7 +64,7 @@ def test_apply_patch_failure():
     )
 
     # 1. 创建初始文件
-    tools.create_file(filename, original_content)
+    tools.overwrite_file_with_block(filename, original_content)
 
     # 2. 应用一个不匹配的补丁
     patch_result = tools.apply_patch(filename, patch_content)
