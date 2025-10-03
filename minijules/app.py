@@ -14,6 +14,8 @@ from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
 from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
 from autogen_core.memory import MemoryContent, MemoryMimeType
+from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_core.models import SystemMessage, UserMessage
 
 # 导入重构后的项目模块
 import minijules.tools as tools
@@ -65,6 +67,7 @@ class JulesApp:
     def __init__(self, task_string: str, config_list: List[Dict], max_steps: int = MAX_STEPS):
         self.state = TaskState(task_string=task_string)
         self.max_steps = max_steps
+        self.config_list = config_list
 
         # 1. 创建核心代理
         self.core_agent = create_core_agent(config_list)
@@ -94,6 +97,7 @@ class JulesApp:
             tools.git_commit,
             tools.git_create_branch,
             self._request_user_input,
+            self._request_code_review,
             self._task_complete,
         ]
 
@@ -116,6 +120,71 @@ class JulesApp:
         logger.info(f"向用户请求输入: {message}")
         user_response = input(f"❓ {message}\n> ")
         return f"用户提供了以下指导: {user_response}"
+
+    async def _request_code_review(self) -> str:
+        """[工具] 请求对当前代码变更进行评审。"""
+        logger.info("请求代码评审...")
+        try:
+            # 1. 创建一个临时的LLM客户端用于评审
+            # 确保config_list不为空
+            if not self.config_list:
+                return "错误: LLM配置不可用, 无法执行代码评审。"
+
+            # 使用列表中的第一个配置
+            config = self.config_list[0]
+            reviewer_client = OpenAIChatCompletionClient(
+                model=config.get("model"),
+                api_key=config.get("api_key"),
+            )
+
+            # 2. 准备评审所需的内容
+            code_diff = tools.git_diff()
+            if "无变更" in code_diff:
+                return "代码无变更，无需评审。"
+
+            task_description = self.state.task_string
+
+            # 3. 构建评审提示
+            reviewer_system_prompt = """您是一位资深的软件架构师和代码评审专家。您的任务是严格审查所提供的代码变更。
+请根据以下标准进行评估：
+1.  **目标符合度**: 代码变更是否完全、准确地实现了原始任务的要求？
+2.  **正确性与Bug**: 代码逻辑是否正确？是否存在潜在的运行时错误、逻辑漏洞或边缘情况处理不当的问题？
+3.  **代码质量**: 代码是否清晰、可读、可维护？是否遵循了通用的最佳实践？
+4.  **完整性**: 变更是否完整？例如，如果添加了新功能，是否也添加了相应的单元测试？
+
+您的输出应该是一个简洁的Markdown格式的评审报告。如果代码质量很高，请以 `#Correct#` 开头。如果有问题，请清晰地列出需要修改的地方。"""
+
+            review_prompt = f"""
+### 原始任务
+{task_description}
+
+### 代码变更 (Git Diff)
+```diff
+{code_diff}
+```
+
+请根据上述标准提供您的评审报告。"""
+
+            # 4. 调用LLM进行评审
+            response = await reviewer_client.create(
+                messages=[
+                    SystemMessage(content=reviewer_system_prompt),
+                    UserMessage(content=review_prompt, source="code-reviewer-prompt")
+                ]
+            )
+
+            review_content = response.content
+            if not isinstance(review_content, str):
+                 review_content = str(review_content)
+
+
+            logger.info(f"代码评审完成:\n{review_content}")
+            return f"代码评审结果:\n{review_content}"
+
+        except Exception as e:
+            error_message = f"执行代码评审时发生意外错误: {e}"
+            logger.error(error_message)
+            return error_message
 
     async def _task_complete(self, summary: str) -> str:
         """[工具] 处理任务完成信号。"""

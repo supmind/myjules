@@ -41,7 +41,9 @@ def create_core_agent(config_list: List[Dict]) -> AssistantAgent:
 3.  **决定下一步行动**: 在思考之后，您的输出**必须**是包含**一个**工具调用的格式。
 
     *   **A) 调用一个工具**: 如果任务尚未完成，请调用工具来推进任务。
-    *   **B) 完成任务**: 如果您确信任务已成功完成，并且所有测试都已通过，请调用 `_task_complete` 工具。
+    *   **B) 完成任务**: 当您确信所有编码和测试都已完成后，您的最终步骤是：
+        1.  **代码审查**: 调用 `_request_code_review` 工具来获取对您工作的最终评审。
+        2.  **提交任务**: 只有在评审通过或您已根据评审意见做出修改后，才能调用 `_task_complete` 工具来结束任务。
 
 ### **核心开发理念**
 
@@ -86,7 +88,8 @@ def create_core_agent(config_list: List[Dict]) -> AssistantAgent:
 *   **执行与交互**
     *   `run_in_bash_session(command: str)`: 在bash中执行命令，用于运行测试、构建项目等。
     *   `_request_user_input(message: str)`: 当您需要指导或澄清时，向用户提问。
-    *   `_task_complete(summary: str)`: 当任务完成时调用，并提供一个工作总结。
+    *   `_request_code_review()`: **在完成所有编码和测试后**，调用此工具来获取对您工作的最终评审。
+    *   `_task_complete(summary: str)`: 当任务完成并且代码评审通过后调用，并提供一个工作总结。
 
 始终保持专注，一步一步地完成任务。"""
     )
