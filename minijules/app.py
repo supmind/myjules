@@ -29,6 +29,9 @@ def setup_logging():
 
 logger = logging.getLogger(__name__)
 
+# --- 应用配置常量 ---
+MAX_STEPS = 30
+
 # --- 结构化状态管理器 ---
 @dataclass
 class TaskState:
@@ -58,13 +61,13 @@ class JulesApp:
     MiniJules 主应用程序类。
     该类负责编排整个 "观察-思考-行动" 循环，模拟 Jules 的工作流程。
     """
-    def __init__(self, task_string: str, auto_mode: bool = False):
+    def __init__(self, task_string: str, auto_mode: bool = False, max_steps: int = MAX_STEPS):
         """
         初始化 JulesApp。
         """
         self.state = TaskState(task_string=task_string)
         self.auto_mode = auto_mode
-        self.max_steps = 30
+        self.max_steps = max_steps
         self.tool_map = self._get_tool_map()
         self.state.project_language = self._detect_language()
         logger.info(f"自动检测到项目主要语言为: {self.state.project_language}")
@@ -224,9 +227,10 @@ def main():
     )
     parser.add_argument("task", type=str, help="要执行的主要任务描述。")
     parser.add_argument("--auto", action="store_true", help="启用自主模式，无需手动确认每一步。")
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS, help=f"设置最大执行步数 (默认: {MAX_STEPS})。")
     args = parser.parse_args()
 
-    app = JulesApp(task_string=args.task, auto_mode=args.auto)
+    app = JulesApp(task_string=args.task, auto_mode=args.auto, max_steps=args.max_steps)
     app.run()
 
 if __name__ == "__main__":

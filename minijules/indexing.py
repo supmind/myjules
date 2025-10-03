@@ -1,5 +1,6 @@
 import os
 import chromadb
+import logging
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from tree_sitter_language_pack import get_language, get_parser
@@ -7,6 +8,7 @@ from tree_sitter import Parser
 from typing import List, Dict, Any
 
 # --- 全局配置 ---
+logger = logging.getLogger(__name__)
 
 # 定义工作区和数据库路径
 WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
@@ -69,9 +71,7 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
         all_code_blocks, all_comments = [], []
         _traverse_and_collect(tree.root_node, language, all_code_blocks, all_comments)
 
-        # 只保留顶层代码块
         top_level_blocks = [node for node in all_code_blocks if node.parent == tree.root_node]
-
         comment_map = {c.end_point[0]: c.text.decode('utf8') for c in all_comments}
         code_lines = code.splitlines()
 
@@ -81,11 +81,29 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
             block_name = name_node.text.decode('utf8') if name_node else "anonymous"
             block_code = node.text.decode('utf8')
 
-            preceding_line_index = node.start_point[0] - 1
             associated_comment = "无文档。"
 
-            if preceding_line_index >= 0 and code_lines[preceding_line_index].strip() != "":
-                associated_comment = comment_map.get(preceding_line_index, "无文档。")
+            # 优先为 Python 提取精确的 docstring
+            if language == "python":
+                body_node = node.child_by_field_name("body")
+                if body_node and body_node.type == "block" and body_node.named_child_count > 0:
+                    first_child = body_node.named_child(0)
+                    if first_child.type == "expression_statement" and first_child.named_child_count > 0:
+                        string_node = first_child.named_child(0)
+                        if string_node.type == "string":
+                            docstring_content = string_node.text.decode('utf-8')
+                            # 移除外部的引号
+                            for q in ['"""', "'''", '"', "'"]:
+                                if docstring_content.startswith(q) and docstring_content.endswith(q):
+                                    docstring_content = docstring_content[len(q):-len(q)]
+                                    break
+                            associated_comment = docstring_content.strip()
+
+            # 如果没有找到 docstring，则回退到查找前置注释的逻辑
+            if associated_comment == "无文档。":
+                preceding_line_index = node.start_point[0] - 1
+                if preceding_line_index >= 0 and code_lines[preceding_line_index].strip() != "":
+                    associated_comment = comment_map.get(preceding_line_index, "无文档。")
 
             document_lines = [f"// FILEPATH: {file_path.relative_to(WORKSPACE_DIR)}", f"// NAME: {block_name}", f"// DOCS: {associated_comment.strip()}", f"\n{block_code}"]
             metadata = {"filepath": str(file_path.relative_to(WORKSPACE_DIR)), "name": block_name, "comment": associated_comment.strip()}
@@ -95,7 +113,7 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
 
         return chunks
     except Exception as e:
-        print(f"解析 {file_path} 失败: {e}")
+        logger.error(f"解析 {file_path} 失败: {e}")
         return []
 
 def index_workspace():
@@ -138,9 +156,9 @@ def save_memory(task_summary: str, final_code_diff: str):
             ids=[memory_id],
             embeddings=model.encode([document]).tolist()
         )
-        print(f"--- ✅ 成功将任务经验存入记忆库 (ID: {memory_id}) ---")
+        logger.info(f"--- ✅ 成功将任务经验存入记忆库 (ID: {memory_id}) ---")
     except Exception as e:
-        print(f"--- ⚠️ 存入记忆时发生错误: {e} ---")
+        logger.warning(f"--- ⚠️ 存入记忆时发生错误: {e} ---")
 
 def retrieve_memory(query: str, n_results: int = 1) -> List[str]:
     """Retrieves similar past experiences from the memory collection."""
@@ -158,10 +176,13 @@ def retrieve_memory(query: str, n_results: int = 1) -> List[str]:
     except ValueError:
         return [] # Collection might be empty or not exist
     except Exception as e:
-        print(f"--- ⚠️ 检索记忆时发生错误: {e} ---")
+        logger.warning(f"--- ⚠️ 检索记忆时发生错误: {e} ---")
         return []
 
 if __name__ == '__main__':
+    # 为直接运行脚本时配置基本日志记录
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
     (WORKSPACE_DIR / "math").mkdir(parents=True, exist_ok=True)
     (WORKSPACE_DIR / "math/operations.py").write_text("""
 # 这是一个计算器类。
@@ -174,4 +195,6 @@ def subtract(a, b):
     """)
     index_workspace()
     retrieved_docs = retrieve_context("subtract function", n_results=1)
-    if retrieved_docs: print(retrieved_docs[0])
+    if retrieved_docs:
+        logger.info("检索到的文档:")
+        logger.info(retrieved_docs[0])

@@ -24,6 +24,12 @@ def load_language_config():
 
 LANGUAGE_CONFIG = load_language_config()
 
+# --- 工具配置常量 ---
+GIT_AUTHOR_NAME = "MiniJules"
+GIT_AUTHOR_EMAIL = "minijules@agent.ai"
+TEST_REPORT_FILENAME = "test-report.xml"
+
+ROOT_DIR = Path(__file__).parent.parent.resolve()
 WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
 
@@ -257,14 +263,14 @@ def run_tests_and_parse_report(language: str) -> ToolExecutionResult:
             return ToolExecutionResult(success=False, result=f"错误：不支持的测试语言: {language}")
 
         test_command = LANGUAGE_CONFIG[file_extension]["test_command"]
-        report_path = WORKSPACE_DIR / "test-report.xml"
+        report_path = WORKSPACE_DIR / TEST_REPORT_FILENAME
 
         subprocess.run(
             test_command, shell=True, cwd=WORKSPACE_DIR, capture_output=True, text=True, check=False
         )
 
         if not report_path.exists():
-            return ToolExecutionResult(success=False, result="错误：测试报告文件 'test-report.xml' 未生成。可能是测试运行器本身失败了。")
+            return ToolExecutionResult(success=False, result=f"错误：测试报告文件 '{TEST_REPORT_FILENAME}' 未生成。可能是测试运行器本身失败了。")
 
         tree = ET.parse(report_path)
         root = tree.getroot()
@@ -320,8 +326,8 @@ def git_add(filepath: str) -> ToolExecutionResult:
 def git_commit(message: str) -> ToolExecutionResult:
     try:
         repo = git.Repo(WORKSPACE_DIR)
-        repo.config_writer().set_value("user", "name", "MiniJules").release()
-        repo.config_writer().set_value("user", "email", "minijules@agent.ai").release()
+        repo.config_writer().set_value("user", "name", GIT_AUTHOR_NAME).release()
+        repo.config_writer().set_value("user", "email", GIT_AUTHOR_EMAIL).release()
         return ToolExecutionResult(success=True, result=f"成功提交变更:\n{repo.git.commit(m=message)}")
     except Exception as e: return ToolExecutionResult(success=False, result=f"Git commit 操作失败: {e}")
 
@@ -336,52 +342,66 @@ def git_create_branch(branch_name: str) -> ToolExecutionResult:
 
 def manage_dependency(language: str, package_name: str, action: str = "add") -> ToolExecutionResult:
     """
-    Manages project dependencies for a given language.
-    For python, it modifies requirements.txt. For JS, it would modify package.json.
-    This should be followed by a `run_in_bash` command to install the dependencies.
+    使用 pip-tools 管理给定语言的项目依赖。
+    对于 python，它会修改 requirements.in，然后重新编译 requirements.txt。
+    这之后应该跟随一个 `run_in_bash` 命令来运行 `pip install -r requirements.txt`。
 
-    :param language: The programming language ('py' or 'js').
-    :param package_name: The name of the package to add or remove.
-    :param action: The action to perform ('add' or 'remove'). Defaults to 'add'.
+    :param language: 编程语言 (目前只支持 'py')。
+    :param package_name: 要添加或移除的包名。
+    :param action: 要执行的操作 ('add' 或 'remove')。默认为 'add'。
     """
     try:
         if action not in ["add", "remove"]:
             return ToolExecutionResult(success=False, result=f"错误: 无效的操作 '{action}'。只允许 'add' 或 'remove'。")
 
-        if language == "py":
-            req_file = _get_safe_path("requirements.txt")
+        if language != "py":
+            return ToolExecutionResult(success=False, result=f"错误: 目前仅支持 Python ('py') 的依赖管理。")
 
-            if action == "add":
-                with req_file.open("a", encoding="utf-8") as f:
-                    f.write(f"\n{package_name}")
-                return ToolExecutionResult(success=True, result=f"已将 '{package_name}' 添加到 requirements.txt。请稍后运行 'pip install'。")
+        # 注意: 此工具在项目根目录操作依赖文件，而不是在工作区。
+        req_in_file = ROOT_DIR / "requirements.in"
 
-            # Action is 'remove'
-            if not req_file.is_file():
-                 return ToolExecutionResult(success=True, result="requirements.txt 不存在，无需移除。")
+        if not req_in_file.is_file():
+             return ToolExecutionResult(success=False, result=f"错误: 源依赖文件 'requirements.in' 在项目根目录未找到。")
 
-            lines = req_file.read_text(encoding="utf-8").splitlines()
-            original_line_count = len(lines)
-            lines = [line for line in lines if not line.strip().startswith(package_name)]
+        # 读取、修改并写回 requirements.in
+        lines = req_in_file.read_text(encoding="utf-8").splitlines()
+        original_line_count = len(lines)
 
+        if action == "add":
+            if package_name in lines:
+                return ToolExecutionResult(success=True, result=f"包 '{package_name}' 已存在于 requirements.in 中，无需操作。")
+            lines.append(package_name)
+            action_desc = f"已将 '{package_name}' 添加到 requirements.in。"
+        else:  # action == "remove"
+            lines = [line for line in lines if line.strip() != package_name]
             if len(lines) == original_line_count:
-                return ToolExecutionResult(success=False, result=f"在 requirements.txt 中未找到要移除的包 '{package_name}'。")
+                return ToolExecutionResult(success=False, result=f"在 requirements.in 中未找到要移除的包 '{package_name}'。")
+            action_desc = f"已从 requirements.in 中移除 '{package_name}'。"
 
-            req_file.write_text("\n".join(lines), encoding="utf-8")
-            return ToolExecutionResult(success=True, result=f"已从 requirements.txt 中移除 '{package_name}'。")
+        req_in_file.write_text("\n".join(lines), encoding="utf-8")
 
-        elif language == "js":
-            # For JS, it's often better to just run the command directly.
-            # This tool can be a placeholder or a validator.
-            # For now, we'll just return a message suggesting the correct bash command.
-            if action == "add":
-                cmd = f"npm install {package_name}"
-                return ToolExecutionResult(success=True, result=f"建议：为 JS 依赖运行 `run_in_bash`，命令为: '{cmd}'")
-            else: # remove
-                cmd = f"npm uninstall {package_name}"
-                return ToolExecutionResult(success=True, result=f"建议：为 JS 依赖运行 `run_in_bash`，命令为: '{cmd}'")
-        else:
-            return ToolExecutionResult(success=False, result=f"错误: 不支持的语言 '{language}'。")
+        # 重新编译 requirements.txt
+        compile_command = [
+            "python3", "-m", "piptools", "compile", "-q",
+            "-o", str(ROOT_DIR / "requirements.txt"), str(req_in_file)
+        ]
+
+        result = subprocess.run(
+            compile_command, cwd=ROOT_DIR, capture_output=True, text=True, check=False
+        )
+
+        if result.returncode != 0:
+            # 如果编译失败，回滚对 requirements.in 的修改
+            req_in_file.write_text("\n".join(lines), encoding="utf-8")
+            return ToolExecutionResult(
+                success=False,
+                result=f"{action_desc} 但编译 requirements.txt 失败，已回滚更改:\n{result.stderr}"
+            )
+
+        return ToolExecutionResult(
+            success=True,
+            result=f"{action_desc} 并已成功重新编译 requirements.txt。请稍后在工作区运行 'pip install -r ../requirements.txt' 来更新环境。"
+        )
 
     except Exception as e:
         return ToolExecutionResult(success=False, result=f"管理依赖时发生意外错误: {e}")

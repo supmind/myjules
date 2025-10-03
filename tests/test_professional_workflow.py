@@ -53,7 +53,7 @@ def test_jules_app_professional_tdd_workflow(mocker, monkeypatch, setup_test_wor
     """
     # 1. 模拟所有外部依赖和配置
     mocker.patch('minijules.app.load_llm_config', return_value=[{'model': 'mock'}])
-    mocker.patch('argparse.ArgumentParser.parse_args', return_value=MagicMock(task="create a function", auto=True))
+    mocker.patch('argparse.ArgumentParser.parse_args', return_value=MagicMock(task="create a function", auto=True, max_steps=10))
     mocker.patch('minijules.indexing.index_workspace')
     mocker.patch('minijules.indexing.retrieve_context', return_value=[])
     mocker.patch('minijules.indexing.retrieve_memory', return_value=[])

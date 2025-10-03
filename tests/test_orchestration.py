@@ -37,7 +37,7 @@ def test_jules_app_successful_workflow(mocker, monkeypatch):
     """
     # 1. 模拟所有外部依赖
     mocker.patch('minijules.app.load_llm_config', return_value=[{'model': 'mock'}])
-    mocker.patch('argparse.ArgumentParser.parse_args', return_value=MagicMock(task="create a file", auto=True))
+    mocker.patch('argparse.ArgumentParser.parse_args', return_value=MagicMock(task="create a file", auto=True, max_steps=10))
     mocker.patch('minijules.indexing.index_workspace')
     mocker.patch('minijules.indexing.retrieve_context', return_value=[])
     mocker.patch('minijules.indexing.retrieve_memory', return_value=[])
@@ -76,7 +76,7 @@ def test_jules_app_handles_tool_failure(mocker, monkeypatch):
     """
     # 1. 模拟依赖
     mocker.patch('minijules.app.load_llm_config', return_value=[{'model': 'mock'}])
-    mocker.patch('argparse.ArgumentParser.parse_args', return_value=MagicMock(task="read a file", auto=True))
+    mocker.patch('argparse.ArgumentParser.parse_args', return_value=MagicMock(task="read a file", auto=True, max_steps=10))
     mocker.patch('minijules.indexing.index_workspace')
     mocker.patch('minijules.indexing.retrieve_context', return_value=[])
     mocker.patch('minijules.indexing.retrieve_memory', return_value=[])
