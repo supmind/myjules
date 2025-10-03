@@ -91,10 +91,7 @@ class JulesApp:
             "git_add": tools.git_add,
             "git_commit": tools.git_commit,
             "git_create_branch": tools.git_create_branch,
-            "run_tests_and_parse_report": tools.run_tests_and_parse_report,
-            "manage_dependency": tools.manage_dependency,
             "retrieve_code_context": tools.retrieve_code_context,
-            "execute_tdd_cycle": tools.execute_tdd_cycle,
             "task_complete": self._task_complete,
         }
 
@@ -132,14 +129,8 @@ class JulesApp:
 
         tool_function = self.tool_map[tool_name]
         try:
-            if tool_name == "run_tests_and_parse_report" and "language" not in parameters:
-                parameters["language"] = self.state.project_language
-
             if tool_name == "task_complete":
                 parameters["state"] = self.state
-
-            if tool_name == "execute_tdd_cycle":
-                parameters["agents"] = {"core_agent": core_agent, "user_proxy": user_proxy}
 
             return tool_function(**parameters)
         except Exception as e:

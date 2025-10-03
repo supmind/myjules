@@ -242,6 +242,10 @@ pypika==0.48.9
 pyproject-hooks==1.2.0
     # via build
 pytest==8.4.2
+    # via
+    #   -r requirements.in
+    #   pytest-mock
+pytest-mock==3.15.1
     # via -r requirements.in
 python-dateutil==2.9.0.post0
     # via

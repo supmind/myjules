@@ -6,3 +6,4 @@ tree-sitter-language-pack
 GitPython
 python-dotenv
 pytest
+pytest-mock
