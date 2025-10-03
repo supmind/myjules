@@ -1,5 +1,5 @@
 autogen-agentchat
-autogen-ext[openai]
+autogen-ext[openai,docker]
 chromadb
 sentence-transformers
 tree-sitter
@@ -9,3 +9,4 @@ python-dotenv
 pytest
 pytest-mock
 pytest-asyncio
+asyncio-atexit

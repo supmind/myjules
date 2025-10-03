@@ -13,6 +13,10 @@ anyio==4.11.0
     #   httpx
     #   openai
     #   watchfiles
+asyncio-atexit==1.0.1
+    # via
+    #   -r requirements.in
+    #   autogen-ext
 attrs==25.3.0
     # via
     #   jsonschema
@@ -23,7 +27,7 @@ autogen-core==0.7.5
     # via
     #   autogen-agentchat
     #   autogen-ext
-autogen-ext[openai]==0.7.5
+autogen-ext[docker,openai]==0.7.5
     # via -r requirements.in
 backoff==2.2.1
     # via posthog
@@ -53,6 +57,8 @@ distro==1.9.0
     # via
     #   openai
     #   posthog
+docker==7.1.0
+    # via autogen-ext
 durationpy==0.10
     # via kubernetes
 filelock==3.19.1
@@ -289,6 +295,7 @@ regex==2025.9.18
     #   transformers
 requests==2.32.5
     # via
+    #   docker
     #   huggingface-hub
     #   kubernetes
     #   posthog
@@ -395,6 +402,7 @@ typing-inspection==0.4.2
     # via pydantic
 urllib3==2.3.0
     # via
+    #   docker
     #   kubernetes
     #   requests
 uvicorn[standard]==0.37.0
