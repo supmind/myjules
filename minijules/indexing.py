@@ -1,11 +1,11 @@
-import os
-import chromadb
+import asyncio
 import logging
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
-from tree_sitter_language_pack import get_language, get_parser
-from tree_sitter import Parser
 from typing import List, Dict, Any
+
+from autogen_ext.memory.chromadb import ChromaDBVectorMemory, PersistentChromaDBVectorMemoryConfig, SentenceTransformerEmbeddingFunctionConfig
+from autogen_core.memory import MemoryContent, MemoryMimeType
+from tree_sitter_language_pack import get_language, get_parser
 
 # --- 全局配置 ---
 logger = logging.getLogger(__name__)
@@ -13,22 +13,16 @@ logger = logging.getLogger(__name__)
 # 定义工作区和数据库路径
 WORKSPACE_DIR = Path(__file__).parent.resolve() / "workspace"
 DB_PATH = Path(__file__).parent.resolve() / "chroma_db"
-CODE_COLLECTION_NAME = "code_index"
-MEMORY_COLLECTION_NAME = "memory_index"
+CODE_COLLECTION_NAME = "code_index_v2"  # 使用新版本号以避免与旧数据冲突
+MEMORY_COLLECTION_NAME = "memory_index_v2"
 
-# 加载句子转换器模型 (已升级)
-model = SentenceTransformer('BAAI/bge-large-en-v1.5')
-
-# --- Tree-sitter 多语言配置 ---
-
+# --- Tree-sitter 多语言配置 (保持不变) ---
 LANGUAGES = {
     ".py": "python",
     ".js": "javascript",
     ".go": "go",
     ".rs": "rust",
 }
-
-# 节点类型配置
 TOP_LEVEL_NODE_TYPES = {
     "python": ["function_definition", "class_definition"],
     "javascript": ["function_declaration", "class_declaration", "lexical_declaration"],
@@ -42,9 +36,38 @@ COMMENT_NODE_TYPES = {
     "rust": ["line_comment", "block_comment"],
 }
 
+# --- 新的、基于 AutoGen Memory 的 RAG 和历史记忆实例 ---
+
+# 用于代码检索的 RAG 内存
+code_rag_memory = ChromaDBVectorMemory(
+    config=PersistentChromaDBVectorMemoryConfig(
+        collection_name=CODE_COLLECTION_NAME,
+        persistence_path=str(DB_PATH),
+        k=5,  # 检索前5个最相关的代码块
+        score_threshold=0.4,
+        embedding_function_config=SentenceTransformerEmbeddingFunctionConfig(
+            model_name='BAAI/bge-large-en-v1.5'
+        ),
+    )
+)
+
+# 用于存储和检索已完成任务历史的内存
+task_history_memory = ChromaDBVectorMemory(
+    config=PersistentChromaDBVectorMemoryConfig(
+        collection_name=MEMORY_COLLECTION_NAME,
+        persistence_path=str(DB_PATH),
+        k=1, # 只检索最相关的一个历史任务
+        score_threshold=0.5,
+        embedding_function_config=SentenceTransformerEmbeddingFunctionConfig(
+            model_name='BAAI/bge-large-en-v1.5'
+        ),
+    )
+)
+
+# --- 代码分块逻辑 (大部分保持不变) ---
+
 def _traverse_and_collect(node, language, code_blocks, comments):
     """递归地遍历 AST，收集顶层代码块和所有注释。"""
-    # 检查当前节点是否是顶层代码块
     if node.type in TOP_LEVEL_NODE_TYPES.get(language, []):
         if language == 'javascript' and node.type == 'lexical_declaration':
             var_declarator = node.child(0)
@@ -52,15 +75,10 @@ def _traverse_and_collect(node, language, code_blocks, comments):
                  code_blocks.append(var_declarator)
         else:
             code_blocks.append(node)
-
-    # 检查当前节点是否是注释
     if node.type in COMMENT_NODE_TYPES.get(language, []):
         comments.append(node)
-
-    # 递归遍历所有子节点
     for child in node.children:
         _traverse_and_collect(child, language, code_blocks, comments)
-
 
 def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
     try:
@@ -80,10 +98,8 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
             name_node = node.child_by_field_name("name") or next((c for c in node.children if c.type in ['identifier', 'type_identifier']), None)
             block_name = name_node.text.decode('utf8') if name_node else "anonymous"
             block_code = node.text.decode('utf8')
-
             associated_comment = "无文档。"
 
-            # 优先为 Python 提取精确的 docstring
             if language == "python":
                 body_node = node.child_by_field_name("body")
                 if body_node and body_node.type == "block" and body_node.named_child_count > 0:
@@ -91,110 +107,80 @@ def extract_chunks(file_path: Path, language: str) -> List[Dict[str, Any]]:
                     if first_child.type == "expression_statement" and first_child.named_child_count > 0:
                         string_node = first_child.named_child(0)
                         if string_node.type == "string":
-                            docstring_content = string_node.text.decode('utf-8')
-                            # 移除外部的引号
-                            for q in ['"""', "'''", '"', "'"]:
-                                if docstring_content.startswith(q) and docstring_content.endswith(q):
-                                    docstring_content = docstring_content[len(q):-len(q)]
-                                    break
+                            docstring_content = string_node.text.decode('utf-8').strip('\'\"')
                             associated_comment = docstring_content.strip()
 
-            # 如果没有找到 docstring，则回退到查找前置注释的逻辑
             if associated_comment == "无文档。":
                 preceding_line_index = node.start_point[0] - 1
-                if preceding_line_index >= 0 and code_lines[preceding_line_index].strip() != "":
+                if preceding_line_index >= 0 and code_lines[preceding_line_index].strip().startswith(('#', '//')):
                     associated_comment = comment_map.get(preceding_line_index, "无文档。")
 
-            document_lines = [f"// FILEPATH: {file_path.relative_to(WORKSPACE_DIR)}", f"// NAME: {block_name}", f"// DOCS: {associated_comment.strip()}", f"\n{block_code}"]
-            metadata = {"filepath": str(file_path.relative_to(WORKSPACE_DIR)), "name": block_name, "comment": associated_comment.strip()}
-            document = "\n".join(document_lines)
-            chunk_id = f"{file_path.relative_to(WORKSPACE_DIR)}::{block_name}"
-            chunks.append({"document": document, "metadata": metadata, "id": chunk_id})
+            document = f"FILEPATH: {file_path.relative_to(WORKSPACE_DIR)}\nNAME: {block_name}\nDOCS: {associated_comment}\n\n{block_code}"
+            metadata = {"filepath": str(file_path.relative_to(WORKSPACE_DIR)), "name": block_name, "comment": associated_comment}
+            chunks.append({"content": document, "metadata": metadata})
 
         return chunks
     except Exception as e:
         logger.error(f"解析 {file_path} 失败: {e}")
         return []
 
-def index_workspace():
-    client = chromadb.PersistentClient(path=str(DB_PATH))
-    try: client.delete_collection(name=CODE_COLLECTION_NAME)
-    except Exception: pass
-    collection = client.get_or_create_collection(name=CODE_COLLECTION_NAME)
+async def index_workspace():
+    """
+    索引整个工作区，使用新的 ChromaDBVectorMemory。
+    """
+    logger.info("清空现有代码索引...")
+    await code_rag_memory.clear()
 
-    all_chunks = [chunk for fp in WORKSPACE_DIR.rglob('*') if fp.is_file() and fp.suffix in LANGUAGES for chunk in extract_chunks(fp, LANGUAGES[fp.suffix])]
+    logger.info("开始索引工作区文件...")
+    total_chunks = 0
+    for fp in WORKSPACE_DIR.rglob('*'):
+        if fp.is_file() and fp.suffix in LANGUAGES:
+            chunks = extract_chunks(fp, LANGUAGES[fp.suffix])
+            if chunks:
+                memory_contents = [
+                    MemoryContent(content=chunk['content'], mime_type=MemoryMimeType.TEXT, metadata=chunk['metadata'])
+                    for chunk in chunks
+                ]
+                await code_rag_memory.add(memory_contents)
+                total_chunks += len(chunks)
 
-    if not all_chunks: return
+    logger.info(f"索引完成。共处理 {total_chunks} 个代码块。")
 
-    collection.add(
-        documents=[c['document'] for c in all_chunks],
-        metadatas=[c['metadata'] for c in all_chunks],
-        ids=[c['id'] for c in all_chunks],
-        embeddings=model.encode([c['document'] for c in all_chunks]).tolist()
-    )
-
-def retrieve_context(query: str, n_results: int = 3) -> List[str]:
-    client = chromadb.PersistentClient(path=str(DB_PATH))
-    try:
-        collection = client.get_collection(name=CODE_COLLECTION_NAME)
-        results = collection.query(query_embeddings=model.encode([query]).tolist(), n_results=n_results)
-        return results['documents'][0] if results and results.get('documents') else []
-    except ValueError:
-        return []
-
-def save_memory(task_summary: str, final_code_diff: str):
-    """Saves the summary of a completed task to the memory collection."""
-    try:
-        client = chromadb.PersistentClient(path=str(DB_PATH))
-        collection = client.get_or_create_collection(name=MEMORY_COLLECTION_NAME)
-
-        document = f"任务总结:\n{task_summary}\n\n最终代码变更:\n{final_code_diff}"
-        memory_id = f"memory_{collection.count() + 1}"
-
-        collection.add(
-            documents=[document],
-            ids=[memory_id],
-            embeddings=model.encode([document]).tolist()
-        )
-        logger.info(f"--- ✅ 成功将任务经验存入记忆库 (ID: {memory_id}) ---")
-    except Exception as e:
-        logger.warning(f"--- ⚠️ 存入记忆时发生错误: {e} ---")
-
-def retrieve_memory(query: str, n_results: int = 1) -> List[str]:
-    """Retrieves similar past experiences from the memory collection."""
-    try:
-        client = chromadb.PersistentClient(path=str(DB_PATH))
-        collection = client.get_collection(name=MEMORY_COLLECTION_NAME)
-        if collection.count() == 0:
-            return []
-
-        results = collection.query(
-            query_embeddings=model.encode([query]).tolist(),
-            n_results=n_results
-        )
-        return results['documents'][0] if results and results.get('documents') else []
-    except ValueError:
-        return [] # Collection might be empty or not exist
-    except Exception as e:
-        logger.warning(f"--- ⚠️ 检索记忆时发生错误: {e} ---")
-        return []
+# 旧的函数 retrieve_context, save_memory, retrieve_memory 已被移除，
+# 因为它们的功能现在由 code_rag_memory 和 task_history_memory 对象直接提供。
 
 if __name__ == '__main__':
-    # 为直接运行脚本时配置基本日志记录
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    (WORKSPACE_DIR / "math").mkdir(parents=True, exist_ok=True)
-    (WORKSPACE_DIR / "math/operations.py").write_text("""
+    async def main():
+        # 创建一个测试文件
+        (WORKSPACE_DIR / "math").mkdir(parents=True, exist_ok=True)
+        (WORKSPACE_DIR / "math/operations.py").write_text("""
 # 这是一个计算器类。
 class Calculator:
+    '''一个用于执行基本数学运算的类。'''
     def add(self, a, b):
+        # 将两个数相加
         return a + b
-# 这是一个独立的减法函数。
+
 def subtract(a, b):
+    # 将两个数相减
     return a - b
-    """)
-    index_workspace()
-    retrieved_docs = retrieve_context("subtract function", n_results=1)
-    if retrieved_docs:
-        logger.info("检索到的文档:")
-        logger.info(retrieved_docs[0])
+""")
+        # 索引工作区
+        await index_workspace()
+
+        # 检索
+        query = "如何将两个数相加？"
+        results = await code_rag_memory.query(query)
+
+        logger.info(f"\n--- 对 '{query}' 的检索结果 ---")
+        if results:
+            for res in results:
+                logger.info(f"相似度分数: {res.metadata.get('score')}")
+                logger.info(res.content)
+                logger.info("-" * 20)
+        else:
+            logger.info("未找到相关文档。")
+
+    asyncio.run(main())

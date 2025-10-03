@@ -1,19 +1,24 @@
-import autogen
-from typing import Dict, List, Any
+import asyncio
 import json
 import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
 import argparse
-from collections import Counter
 from dataclasses import dataclass, field
+from typing import Dict, List, Any
 
-# 导入项目模块
+# 导入新的 autogen 模块
+from autogen_agentchat.agents import CodeExecutorAgent
+from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
+from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
+from autogen_core.memory import MemoryContent, MemoryMimeType
+
+# 导入重构后的项目模块
 import minijules.tools as tools
 import minijules.indexing as indexing
-from minijules.agents import core_agent, user_proxy, assign_llm_config
-from minijules.result import ToolExecutionResult
+from minijules.agents import create_core_agent
 
 # --- 日志配置 ---
 def setup_logging():
@@ -23,7 +28,6 @@ def setup_logging():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    # 为一些过于冗长的库降低日志级别
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
@@ -38,17 +42,15 @@ class TaskState:
     """封装与单个任务相关的所有状态。"""
     task_string: str
     work_history: List[str] = field(default_factory=list)
-    project_language: str = "py"
-    memory_context: str = ""
 
 # --- 配置加载 ---
-def load_llm_config():
-    """从 .env 文件或环境变量加载 LLM 配置。"""
+def load_llm_config_list():
+    """从 .env 文件或环境变量加载 LLM 配置列表。"""
     load_dotenv()
     config_list_json = os.environ.get("OAI_CONFIG_LIST")
     if config_list_json:
         try:
-            return autogen.config_list_from_json(env_or_file=config_list_json)
+            return json.loads(config_list_json)
         except Exception as e:
             logger.error(f"无法解析 OAI_CONFIG_LIST 环境变量。错误: {e}")
             return None
@@ -58,215 +60,122 @@ def load_llm_config():
 # --- 新的主应用 ---
 class JulesApp:
     """
-    MiniJules 主应用程序类。
-    该类负责编排整个 "观察-思考-行动" 循环，模拟 Jules 的工作流程。
+    MiniJules 主应用程序类 (v0.4 重构版)。
     """
-    def __init__(self, task_string: str, auto_mode: bool = False, max_steps: int = MAX_STEPS):
-        """
-        初始化 JulesApp。
-        """
+    def __init__(self, task_string: str, config_list: List[Dict], max_steps: int = MAX_STEPS):
         self.state = TaskState(task_string=task_string)
-        self.auto_mode = auto_mode
         self.max_steps = max_steps
-        self.tool_map = self._get_tool_map()
-        self.state.project_language = self._detect_language()
-        logger.info(f"自动检测到项目主要语言为: {self.state.project_language}")
 
-    def _get_tool_map(self) -> Dict:
-        """返回所有可用工具的名称到函数的映射。"""
-        return {
-            "list_project_structure": tools.list_project_structure,
-            "list_files": tools.list_files,
-            "read_file": tools.read_file,
-            "create_file": tools.create_file,
-            "delete_file": tools.delete_file,
-            "write_to_scratchpad": tools.write_to_scratchpad,
-            "read_scratchpad": tools.read_scratchpad,
-            "run_in_bash": tools.run_in_bash,
-            "apply_patch": tools.apply_patch,
-            "replace_function_definition": tools.replace_function_definition,
-            "insert_into_class_body": tools.insert_into_class_body,
-            "git_status": tools.git_status,
-            "git_diff": tools.git_diff,
-            "git_add": tools.git_add,
-            "git_commit": tools.git_commit,
-            "git_create_branch": tools.git_create_branch,
-            "retrieve_code_context": tools.retrieve_code_context,
-            "request_user_input": self._request_user_input,
-            "task_complete": self._task_complete,
-        }
+        # 1. 创建核心代理
+        self.core_agent = create_core_agent(config_list)
 
-    def _extract_json_from_reply(self, reply: str) -> str | None:
-        """
-        从 LLM 的回复中提取 JSON 字符串。
-        它能处理两种情况:
-        1.  被 ```json ... ``` 包围的 Markdown 代码块。
-        2.  裸露的、从 '{' 开始到 '}' 结束的 JSON 对象。
-        """
-        import re
-        # 模式1: 匹配 ```json ... ``` 代码块
-        # 使用非贪婪匹配来正确处理嵌套或多个JSON块的情况
-        match = re.search(r"```json\s*(.*?)\s*```", reply, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        # 2. 初始化代码执行代理
+        # 在这里动态创建执行器，以便它能获取被测试 monkeypatch 过的 WORKSPACE_DIR
+        code_executor = LocalCommandLineCodeExecutor(work_dir=str(tools.WORKSPACE_DIR))
+        self.code_executor_agent = CodeExecutorAgent(
+            name="CodeExecutor",
+            code_executor=code_executor,
+        )
 
-        # 模式2: 匹配裸露的 JSON 对象
-        # 寻找第一个 '{' 和最后一个 '}' 以包含整个对象
-        try:
-            start_index = reply.find('{')
-            end_index = reply.rfind('}')
-            if start_index != -1 and end_index != -1 and start_index < end_index:
-                potential_json = reply[start_index:end_index+1]
-                # 尝试解析以验证它是一个有效的JSON
-                json.loads(potential_json)
-                return potential_json.strip()
-        except json.JSONDecodeError:
-            # 如果裸露的字符串不是有效的JSON，则忽略
-            pass
+        # 3. 为核心代理注册工具
+        self.core_agent.tools = [
+            tools.list_project_structure,
+            tools.list_files,
+            tools.read_file,
+            tools.create_file,
+            tools.delete_file,
+            tools.run_in_bash,
+            tools.apply_patch,
+            tools.git_status,
+            tools.git_diff,
+            tools.git_add,
+            tools.git_commit,
+            tools.git_create_branch,
+            self._request_user_input,
+            self._task_complete,
+        ]
 
-        return None
+        # 4. 为核心代理配置记忆系统
+        self.core_agent.memory = [indexing.code_rag_memory, indexing.task_history_memory]
 
-    def _request_user_input(self, message: str) -> ToolExecutionResult:
-        """向用户显示一条消息，并等待他们的文本输入。"""
+        # 5. 定义群聊终止条件
+        termination_condition = (
+            TextMentionTermination("TERMINATE") | MaxMessageTermination(self.max_steps)
+        )
+
+        # 6. **关键修复**: 创建群聊，使用 'participants' 关键字参数
+        self.group_chat = RoundRobinGroupChat(
+            participants=[self.core_agent, self.code_executor_agent],
+            termination_condition=termination_condition,
+        )
+
+    def _request_user_input(self, message: str) -> str:
+        """[工具] 向用户请求输入。"""
         logger.info(f"向用户请求输入: {message}")
         user_response = input(f"❓ {message}\n> ")
-        return ToolExecutionResult(success=True, result=f"用户提供了以下指导: {user_response}")
+        return f"用户提供了以下指导: {user_response}"
 
-    def _detect_language(self) -> str:
-        """通过扫描工作区中的文件扩展名来自动检测项目的主要语言。"""
-        language_map = { ext: data['language'] for ext, data in tools.LANGUAGE_CONFIG.items() }
-        file_extensions = [f.suffix for f in tools.WORKSPACE_DIR.rglob('*') if f.is_file() and f.suffix in language_map]
-        if not file_extensions: return 'py'
-        most_common_ext = Counter(file_extensions).most_common(1)[0][0]
-        return language_map[most_common_ext]
-
-    def _construct_prompt(self) -> str:
-        """构建将发送给 CoreAgent 的提示。"""
-        history_section = "\n".join(self.state.work_history) if self.state.work_history else "还没有任何动作被执行。"
-        memory_section = self.state.memory_context if self.state.memory_context else "无相关历史经验。"
-        return f"""
-### **最终目标**
-{self.state.task_string}
-
-### **相关历史经验**
----
-{memory_section}
----
-
-### **工作历史**
----
-{history_section}
----
-"""
-
-    def _execute_tool(self, tool_name: str, parameters: Dict) -> ToolExecutionResult:
-        """执行指定的工具并返回结果。"""
-        if tool_name not in self.tool_map:
-            return ToolExecutionResult(success=False, result=f"错误: 工具 '{tool_name}' 不存在。")
-
-        tool_function = self.tool_map[tool_name]
+    async def _task_complete(self, summary: str) -> str:
+        """[工具] 处理任务完成信号。"""
+        logger.info("任务完成工具被调用，正在保存任务经验...")
         try:
-            if tool_name == "task_complete":
-                parameters["state"] = self.state
+            final_diff = tools.git_diff()
+            full_summary_doc = f"原始任务: {self.state.task_string}\n工作总结: {summary}\n\n最终代码变更:\n{final_diff}"
 
-            return tool_function(**parameters)
+            await indexing.task_history_memory.add(
+                MemoryContent(content=full_summary_doc, mime_type=MemoryMimeType.TEXT)
+            )
+
+            success_message = f"任务已成功完成，并已存入记忆库: {summary}"
+            logger.info(success_message)
+            return success_message
         except Exception as e:
-            return ToolExecutionResult(success=False, result=f"执行工具 '{tool_name}' 时发生意外的 Python 异常: {e}")
+            error_message = f"存入记忆时发生错误: {e}"
+            logger.error(error_message)
+            return error_message
 
-    def _task_complete(self, summary: str, state: TaskState) -> ToolExecutionResult:
-        """处理任务完成信号，并自动获取代码变更，将任务经验保存到记忆库。"""
-        logger.info("正在保存任务经验到记忆库...")
-        final_diff_result = tools.git_diff()
-        final_diff = final_diff_result.result if final_diff_result.success else "获取代码变更失败。"
-        full_summary = f"原始任务: {state.task_string}\n工作总结: {summary}\n\n工作历史:\n" + "\n".join(state.work_history)
-        indexing.save_memory(task_summary=full_summary, final_code_diff=final_diff)
-        return ToolExecutionResult(success=True, result=f"任务已成功完成，并已存入记忆库: {summary}")
-
-    def run(self):
-        """运行主应用循环。"""
+    async def run(self):
+        """运行主应用流程。"""
         logger.info(f"接收到任务: {self.state.task_string}")
 
-        logger.info("正在索引工作区...")
-        indexing.index_workspace()
+        logger.info("正在异步索引工作区...")
+        await indexing.index_workspace()
+        logger.info("工作区索引完成。")
 
-        logger.info("正在检索相关历史经验...")
-        self.state.memory_context = "\n\n".join(indexing.retrieve_memory(self.state.task_string, n_results=1))
-        if self.state.memory_context:
-            logger.info("发现相关历史经验。")
-
-        for step in range(self.max_steps):
-            logger.info(f"--- 思考循环: 第 {step + 1}/{self.max_steps} 步 ---")
-
-            prompt = self._construct_prompt()
-
-            chat_result = user_proxy.initiate_chat(core_agent, message=prompt, max_turns=1, silent=False)
-            agent_reply = chat_result.summary.strip()
-
-            # --- 新的、更健壮的JSON提取逻辑 ---
-            json_str = self._extract_json_from_reply(agent_reply)
-            if not json_str:
-                logger.error("在 CoreAgent 的回复中找不到有效的JSON对象。正在将此错误反馈给代理。")
-                self.state.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复中没有找到JSON对象。请严格遵循格式要求。")
-                continue
-
-            try:
-                action = json.loads(json_str)
-                tool_name = action.get("tool_name")
-                parameters = action.get("parameters", {})
-            except json.JSONDecodeError:
-                logger.error("CoreAgent 返回了无效的JSON。正在将此错误反馈给代理。")
-                self.state.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复不是一个有效的JSON对象。请严格遵循格式要求。")
-                continue
-
-            if not tool_name:
-                 logger.error("CoreAgent 返回的JSON中缺少 'tool_name'。")
-                 self.state.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复缺少 'tool_name'。")
-                 continue
-
-            logger.info(f"下一步动作: {tool_name}")
-            logger.info(f"参数: {json.dumps(parameters, indent=2, ensure_ascii=False)}")
-
-            if not self.auto_mode:
-                if input("✅ 按 Enter键 继续, 或输入 'exit' 退出: ").lower() == 'exit':
-                    logger.warning("用户中止了任务。"); break
-
-            exec_result = self._execute_tool(tool_name, parameters)
-            logger.info(f"结果: {exec_result.result}")
-
-            loggable_params = parameters.copy()
-            loggable_params.pop('state', None)
-            loggable_params.pop('agents', None)
-
-            history_entry = f"动作: {tool_name} with params {json.dumps(loggable_params, ensure_ascii=False)}\n结果: [{'成功' if exec_result.success else '失败'}] {exec_result.result}"
-            self.state.work_history.append(history_entry)
-
-            if tool_name == "task_complete":
-                logger.info("✅ CoreAgent 已确认任务完成 ---")
-                break
-        else:
-            logger.warning("⚠️ 已达到最大步数限制，任务中止 ---")
-
+        logger.info("--- 任务流程开始 ---")
+        chat_result = await self.group_chat.run(task=self.state.task_string)
         logger.info("--- 任务流程结束 ---")
 
+        if chat_result.stop_reason:
+            logger.info(f"任务终止原因: {chat_result.stop_reason}")
 
-def main():
-    """程序主入口，负责解析命令行参数并启动应用。"""
+        self.state.work_history = [msg.to_text() for msg in chat_result.messages]
+        logger.info("\n--- 对话历史回顾 ---")
+        for msg_text in self.state.work_history:
+            logger.info(msg_text)
+            logger.info("-" * 20)
+
+async def main():
+    """程序主入口。"""
     setup_logging()
-    config_list = load_llm_config()
+
+    config_list = load_llm_config_list()
     if not config_list: return
-    assign_llm_config(config_list)
 
     parser = argparse.ArgumentParser(
-        description="MiniJules: 一个基于 '观察-思考-行动' 循环的AI开发助手。",
+        description="MiniJules: 一个基于 AutoGen v0.4 的AI开发助手。",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("task", type=str, help="要执行的主要任务描述。")
-    parser.add_argument("--auto", action="store_true", help="启用自主模式，无需手动确认每一步。")
-    parser.add_argument("--max-steps", type=int, default=MAX_STEPS, help=f"设置最大执行步数 (默认: {MAX_STEPS})。")
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS, help=f"设置最大对话轮次 (默认: {MAX_STEPS})。")
     args = parser.parse_args()
 
-    app = JulesApp(task_string=args.task, auto_mode=args.auto, max_steps=args.max_steps)
-    app.run()
+    app = JulesApp(
+        task_string=args.task,
+        config_list=config_list,
+        max_steps=args.max_steps
+    )
+    await app.run()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

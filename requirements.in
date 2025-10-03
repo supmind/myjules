@@ -1,4 +1,5 @@
-pyautogen
+autogen-agentchat
+autogen-ext[openai]
 chromadb
 sentence-transformers
 tree-sitter
@@ -7,3 +8,4 @@ GitPython
 python-dotenv
 pytest
 pytest-mock
+pytest-asyncio
