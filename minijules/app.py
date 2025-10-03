@@ -43,6 +43,8 @@ MAX_STEPS = 30
 class TaskState:
     """封装与单个任务相关的所有状态。"""
     task_string: str
+    plan: str = ""
+    current_step_index: int = 0
     work_history: List[str] = field(default_factory=list)
 
 # --- 配置加载 ---
@@ -73,7 +75,6 @@ class JulesApp:
         self.core_agent = create_core_agent(config_list)
 
         # 2. 初始化代码执行代理
-        # 在这里动态创建执行器，以便它能获取被测试 monkeypatch 过的 WORKSPACE_DIR
         code_executor = LocalCommandLineCodeExecutor(work_dir=str(tools.WORKSPACE_DIR))
         self.code_executor_agent = CodeExecutorAgent(
             name="CodeExecutor",
@@ -82,6 +83,10 @@ class JulesApp:
 
         # 3. 为核心代理注册工具
         self.core_agent.tools = [
+            # 计划和状态管理工具
+            self.set_plan,
+            self.plan_step_complete,
+            # 文件系统和代码分析工具
             tools.list_project_structure,
             tools.list_files,
             tools.read_file,
@@ -89,16 +94,21 @@ class JulesApp:
             tools.overwrite_file_with_block,
             tools.replace_with_git_merge_diff,
             tools.delete_file,
-            tools.run_in_bash_session,
             tools.apply_patch,
+            # 执行和版本控制工具
+            tools.run_in_bash_session,
             tools.git_status,
             tools.git_diff,
             tools.git_add,
             tools.git_commit,
             tools.git_create_branch,
-            self._request_user_input,
-            self._request_code_review,
-            self._task_complete,
+            # 用户交互和任务完成工具
+            self.message_user,
+            self.request_user_input,
+            self.request_code_review,
+            self.pre_commit_instructions,
+            self.submit,
+            self.task_complete,
         ]
 
         # 4. 为核心代理配置记忆系统
@@ -109,28 +119,86 @@ class JulesApp:
             TextMentionTermination("TERMINATE") | MaxMessageTermination(self.max_steps)
         )
 
-        # 6. **关键修复**: 创建群聊，使用 'participants' 关键字参数
+        # 6. 创建群聊
         self.group_chat = RoundRobinGroupChat(
             participants=[self.core_agent, self.code_executor_agent],
             termination_condition=termination_condition,
         )
 
-    def _request_user_input(self, message: str) -> str:
-        """[工具] 向用户请求输入。"""
-        logger.info(f"向用户请求输入: {message}")
-        user_response = input(f"❓ {message}\n> ")
-        return f"用户提供了以下指导: {user_response}"
+    def set_plan(self, plan: str) -> str:
+        """[工具] 设置或更新任务计划。"""
+        self.state.plan = plan
+        self.state.current_step_index = 1
+        logger.info(f"计划已更新:\n{plan}")
+        return f"计划已成功设置。当前步骤 1/{len(plan.splitlines())}。"
 
-    async def _request_code_review(self) -> str:
+    def plan_step_complete(self, message: str) -> str:
+        """[工具] 标记当前计划步骤已完成。"""
+        total_steps = len(self.state.plan.splitlines())
+        if self.state.current_step_index >= total_steps:
+            return "所有计划步骤均已完成。"
+
+        logger.info(f"步骤 {self.state.current_step_index}/{total_steps} 已完成: {message}")
+        self.state.current_step_index += 1
+        return f"步骤已完成。下一步: {self.state.current_step_index}/{total_steps}。"
+
+    async def message_user(self, message: str, continue_working: bool = False) -> str:
+        """[工具] 向用户发送消息。"""
+        logger.info(f"给用户的消息: {message}")
+        if not continue_working:
+            return "任务已由 agent 暂停，等待用户反馈。请在准备好后重新运行。TERMINATE"
+        return "消息已发送。"
+
+    async def pre_commit_instructions(self) -> str:
+        """[工具] 返回预提交指令。"""
+        instructions = """\
+# 预提交检查清单
+
+在您提交代码之前，请仔细检查并完成以下步骤：
+
+1.  **运行所有测试**: 确保您的更改没有破坏任何现有功能。
+    - 使用 `run_in_bash_session` 运行 `python3 -m pytest`。
+
+2.  **代码审查**: 请求一次最终的代码审查。
+    - 使用 `request_code_review` 工具。分析评审结果，如果需要，进行修改。
+
+3.  **最终验证**: 在提交之前，最后一次审视您的代码变更。
+    - 使用 `git_diff` 检查最终的变更。
+    - 确保没有遗留任何调试代码或不必要的注释。
+
+4.  **反思和总结**: 准备好一个清晰的提交信息。
+    - 总结您所做的工作、解决的问题以及实现方式。
+
+完成以上所有步骤后，您就可以使用 `submit` 工具来提交您的工作了。
+"""
+        return instructions
+
+    async def submit(self, branch_name: str, commit_message: str, title: str, description: str) -> str:
+        """[工具] 提交工作并终止任务。"""
+        logger.info("--- 任务提交 ---")
+        logger.info(f"分支: {branch_name}")
+        logger.info(f"标题: {title}")
+        logger.info(f"描述: {description}")
+        logger.info(f"提交信息:\n{commit_message}")
+        logger.info("-----------------")
+
+        summary = f"任务以标题 '{title}' 成功提交在分支 '{branch_name}'。"
+        await self.task_complete(summary)
+
+        return "任务已成功提交。工作流程终止。TERMINATE"
+
+    async def request_user_input(self, message: str) -> str:
+        """[工具] 向用户请求输入，并暂停工作流。"""
+        logger.info(f"向用户请求输入: {message}")
+        return f"Agent 请求用户输入: '{message}'. 工作流已暂停。TERMINATE"
+
+    async def request_code_review(self) -> str:
         """[工具] 请求对当前代码变更进行评审。"""
         logger.info("请求代码评审...")
         try:
-            # 1. 创建一个临时的LLM客户端用于评审
-            # 确保config_list不为空
             if not self.config_list:
                 return "错误: LLM配置不可用, 无法执行代码评审。"
 
-            # 使用列表中的第一个配置
             config = self.config_list[0]
             reviewer_client = OpenAIChatCompletionClient(
                 model=config.get("model"),
@@ -138,14 +206,12 @@ class JulesApp:
                 base_url=config.get("base_url"),
             )
 
-            # 2. 准备评审所需的内容
             code_diff = tools.git_diff()
             if "无变更" in code_diff:
                 return "代码无变更，无需评审。"
 
             task_description = self.state.task_string
 
-            # 3. 构建评审提示
             reviewer_system_prompt = """您是一位资深的软件架构师和代码评审专家。您的任务是严格审查所提供的代码变更。
 请根据以下标准进行评估：
 1.  **目标符合度**: 代码变更是否完全、准确地实现了原始任务的要求？
@@ -166,7 +232,6 @@ class JulesApp:
 
 请根据上述标准提供您的评审报告。"""
 
-            # 4. 调用LLM进行评审
             response = await reviewer_client.create(
                 messages=[
                     SystemMessage(content=reviewer_system_prompt),
@@ -178,7 +243,6 @@ class JulesApp:
             if not isinstance(review_content, str):
                  review_content = str(review_content)
 
-
             logger.info(f"代码评审完成:\n{review_content}")
             return f"代码评审结果:\n{review_content}"
 
@@ -187,7 +251,7 @@ class JulesApp:
             logger.error(error_message)
             return error_message
 
-    async def _task_complete(self, summary: str) -> str:
+    async def task_complete(self, summary: str) -> str:
         """[工具] 处理任务完成信号。"""
         logger.info("任务完成工具被调用，正在保存任务经验...")
         try:

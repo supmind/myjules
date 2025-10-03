@@ -48,7 +48,7 @@ async def test_request_code_review_tool(mocker):
     app = JulesApp(task_string=test_task, config_list=[{'model': 'mock', 'api_key': 'mock_key'}])
 
     # 4. 调用被测试的工具
-    result = await app._request_code_review()
+    result = await app.request_code_review()
 
     # 5. 验证
     mock_reviewer_client.create.assert_called_once()
