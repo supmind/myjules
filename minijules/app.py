@@ -2,6 +2,7 @@ import autogen
 from typing import Dict, List, Any
 import json
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 import argparse
@@ -13,6 +14,20 @@ import minijules.tools as tools
 import minijules.indexing as indexing
 from minijules.agents import core_agent, user_proxy, assign_llm_config
 from minijules.result import ToolExecutionResult
+
+# --- 日志配置 ---
+def setup_logging():
+    """配置全局日志记录器。"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    # 为一些过于冗长的库降低日志级别
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 # --- 结构化状态管理器 ---
 @dataclass
@@ -32,9 +47,9 @@ def load_llm_config():
         try:
             return autogen.config_list_from_json(env_or_file=config_list_json)
         except Exception as e:
-            print(f"错误: 无法解析 OAI_CONFIG_LIST 环境变量。错误: {e}")
+            logger.error(f"无法解析 OAI_CONFIG_LIST 环境变量。错误: {e}")
             return None
-    print("错误: LLM 配置未找到。请参考 .env.template 设置您的配置。")
+    logger.error("LLM 配置未找到。请参考 .env.template 设置您的配置。")
     return None
 
 # --- 新的主应用 ---
@@ -46,21 +61,16 @@ class JulesApp:
     def __init__(self, task_string: str, auto_mode: bool = False):
         """
         初始化 JulesApp。
-
-        Args:
-            task_string (str): 要执行的最高级别任务描述。
-            auto_mode (bool): 是否启用自主模式，无需手动确认每一步。
         """
         self.state = TaskState(task_string=task_string)
         self.auto_mode = auto_mode
         self.max_steps = 30
         self.tool_map = self._get_tool_map()
         self.state.project_language = self._detect_language()
-        print(f"--- 自动检测到项目主要语言为: {self.state.project_language} ---")
+        logger.info(f"自动检测到项目主要语言为: {self.state.project_language}")
 
     def _get_tool_map(self) -> Dict:
         """返回所有可用工具的名称到函数的映射。"""
-        # 注意: 工具函数现在接收 TaskState 作为参数
         return {
             "list_project_structure": tools.list_project_structure,
             "list_files": tools.list_files,
@@ -121,11 +131,9 @@ class JulesApp:
             if tool_name == "run_tests_and_parse_report" and "language" not in parameters:
                 parameters["language"] = self.state.project_language
 
-            # 将 state 注入到 task_complete 工具中
             if tool_name == "task_complete":
                 parameters["state"] = self.state
 
-            # 为复合工具注入 agent 实例
             if tool_name == "execute_tdd_cycle":
                 parameters["agents"] = {"core_agent": core_agent, "user_proxy": user_proxy}
 
@@ -135,7 +143,7 @@ class JulesApp:
 
     def _task_complete(self, summary: str, state: TaskState) -> ToolExecutionResult:
         """处理任务完成信号，并自动获取代码变更，将任务经验保存到记忆库。"""
-        print("--- 正在保存任务经验到记忆库... ---")
+        logger.info("正在保存任务经验到记忆库...")
         final_diff_result = tools.git_diff()
         final_diff = final_diff_result.result if final_diff_result.success else "获取代码变更失败。"
         full_summary = f"原始任务: {state.task_string}\n工作总结: {summary}\n\n工作历史:\n" + "\n".join(state.work_history)
@@ -144,18 +152,18 @@ class JulesApp:
 
     def run(self):
         """运行主应用循环。"""
-        print(f"--- 接收到任务 ---\n{self.state.task_string}\n" + "="*20)
+        logger.info(f"接收到任务: {self.state.task_string}")
 
-        print("--- 正在索引工作区... ---")
+        logger.info("正在索引工作区...")
         indexing.index_workspace()
 
-        print("--- 正在检索相关历史经验... ---")
+        logger.info("正在检索相关历史经验...")
         self.state.memory_context = "\n\n".join(indexing.retrieve_memory(self.state.task_string, n_results=1))
         if self.state.memory_context:
-            print("> 发现相关历史经验。")
+            logger.info("发现相关历史经验。")
 
         for step in range(self.max_steps):
-            print(f"\n--- 思考循环: 第 {step + 1}/{self.max_steps} 步 ---")
+            logger.info(f"--- 思考循环: 第 {step + 1}/{self.max_steps} 步 ---")
 
             prompt = self._construct_prompt()
 
@@ -168,26 +176,25 @@ class JulesApp:
                 tool_name = action.get("tool_name")
                 parameters = action.get("parameters", {})
             except json.JSONDecodeError:
-                print(f"错误: CoreAgent 返回了无效的JSON。正在将此错误反馈给代理。")
+                logger.error("CoreAgent 返回了无效的JSON。正在将此错误反馈给代理。")
                 self.state.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复不是一个有效的JSON对象。请严格遵循格式要求。")
                 continue
 
             if not tool_name:
-                 print(f"错误: CoreAgent 返回的JSON中缺少 'tool_name'。")
+                 logger.error("CoreAgent 返回的JSON中缺少 'tool_name'。")
                  self.state.work_history.append(f"动作: 无\n结果: 错误 - 你上一次的回复缺少 'tool_name'。")
                  continue
 
-            print(f"> 下一步动作: {tool_name}")
-            print(f"> 参数:\n{json.dumps(parameters, indent=2, ensure_ascii=False)}")
+            logger.info(f"下一步动作: {tool_name}")
+            logger.info(f"参数: {json.dumps(parameters, indent=2, ensure_ascii=False)}")
 
             if not self.auto_mode:
                 if input("✅ 按 Enter键 继续, 或输入 'exit' 退出: ").lower() == 'exit':
-                    print("用户中止了任务。"); break
+                    logger.warning("用户中止了任务。"); break
 
             exec_result = self._execute_tool(tool_name, parameters)
-            print(f"--- 结果 ---\n{exec_result.result}\n" + "="*20)
+            logger.info(f"结果: {exec_result.result}")
 
-            # 为日志记录创建一个参数的副本，并移除不可序列化的对象
             loggable_params = parameters.copy()
             loggable_params.pop('state', None)
             loggable_params.pop('agents', None)
@@ -196,16 +203,17 @@ class JulesApp:
             self.state.work_history.append(history_entry)
 
             if tool_name == "task_complete":
-                print("\n--- ✅ CoreAgent 已确认任务完成 ---")
+                logger.info("✅ CoreAgent 已确认任务完成 ---")
                 break
         else:
-            print("\n--- ⚠️ 已达到最大步数限制，任务中止 ---")
+            logger.warning("⚠️ 已达到最大步数限制，任务中止 ---")
 
-        print("\n--- 任务流程结束 ---")
+        logger.info("--- 任务流程结束 ---")
 
 
 def main():
     """程序主入口，负责解析命令行参数并启动应用。"""
+    setup_logging()
     config_list = load_llm_config()
     if not config_list: return
     assign_llm_config(config_list)
