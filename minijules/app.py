@@ -193,6 +193,19 @@ class JulesApp:
                     logger.warning("用户中止了任务。"); break
 
             exec_result = self._execute_tool(tool_name, parameters)
+
+            # --- 安全确认流程 ---
+            if not exec_result.success and exec_result.result.startswith("CONFIRMATION_REQUIRED:"):
+                logger.warning(exec_result.result)
+                user_confirmation = input("⚠️  您想授权执行这个潜在的危险命令吗? (yes/no): ")
+                if user_confirmation.lower() == 'yes':
+                    logger.info("用户已授权，正在强制执行命令...")
+                    forced_parameters = parameters.copy()
+                    forced_parameters['force'] = True
+                    exec_result = self._execute_tool(tool_name, forced_parameters)
+                else:
+                    logger.info("用户拒绝执行危险命令。")
+
             logger.info(f"结果: {exec_result.result}")
 
             loggable_params = parameters.copy()

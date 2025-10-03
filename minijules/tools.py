@@ -240,14 +240,29 @@ def read_scratchpad() -> ToolExecutionResult:
         return ToolExecutionResult(success=True, result=content)
     except Exception as e: return ToolExecutionResult(success=False, result=f"读取便签时发生意外错误: {e}")
 
-def run_in_bash(command: str) -> ToolExecutionResult:
+# 定义一个危险命令片段的列表，用于安全检查
+DANGEROUS_COMMANDS = ["rm -rf", "mv ", "chmod", "> /dev/null"]
+
+def run_in_bash(command: str, force: bool = False) -> ToolExecutionResult:
+    """
+    在工作区的安全沙盒内执行一个 shell 命令。
+    包含一个安全检查，以防止执行潜在的危险命令，除非被强制执行。
+    """
+    if not force:
+        for dangerous_cmd in DANGEROUS_COMMANDS:
+            if dangerous_cmd in command:
+                error_msg = f"检测到潜在的危险命令: '{command}'. 需要用户确认才能执行。"
+                # 返回一个特殊的、可识别的错误代码
+                return ToolExecutionResult(success=False, result=f"CONFIRMATION_REQUIRED: {error_msg}")
+
     try:
         result = subprocess.run(command, shell=True, cwd=WORKSPACE_DIR, capture_output=True, text=True, check=False)
         output = f"STDOUT:\n{result.stdout}\n" if result.stdout else ""
         output += f"STDERR:\n{result.stderr}\n" if result.stderr else ""
         output += f"返回码: {result.returncode}"
         return ToolExecutionResult(success=True, result=output)
-    except Exception as e: return ToolExecutionResult(success=False, result=f"运行命令时发生意外错误: {e}")
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"运行命令时发生意外错误: {e}")
 
 def run_tests_and_parse_report(language: str) -> ToolExecutionResult:
     """根据指定的语言运行测试，生成 JUnit-XML 报告，然后解析它以提供结构化的测试结果。"""
