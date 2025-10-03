@@ -135,6 +135,7 @@ class JulesApp:
             reviewer_client = OpenAIChatCompletionClient(
                 model=config.get("model"),
                 api_key=config.get("api_key"),
+                base_url=config.get("base_url"),
             )
 
             # 2. 准备评审所需的内容

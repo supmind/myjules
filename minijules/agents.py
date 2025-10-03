@@ -17,6 +17,7 @@ def create_core_agent(config_list: List[Dict]) -> AssistantAgent:
     model_client = OpenAIChatCompletionClient(
         model=config.get("model"),
         api_key=config.get("api_key"),
+        base_url=config.get("base_url"),
         # 可以根据需要添加其他参数，如 api_version, azure_endpoint 等
     )
 
