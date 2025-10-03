@@ -79,3 +79,37 @@ def test_insert_into_class_body_multilang(lang, case):
     assert case["code_to_insert"].splitlines()[0] in content_result.result, f"[{lang}] 文件内容未按预期更新"
 
     tools.delete_file(case["filename"])
+
+def test_apply_patch_success():
+    """测试 apply_patch 是否能成功应用一个有效的补丁。"""
+    filename = "patch_me.txt"
+    original_content = "line 1\nline 2\nline 3\n"
+    # The patch paths (a/ and b/) should be relative to the CWD of the patch command,
+    # which is the workspace dir. So we just use the filename.
+    patch_content = (
+        f"--- {filename}\n"
+        f"+++ {filename}\n"
+        "@@ -1,3 +1,3 @@\n"
+        " line 1\n"
+        "-line 2\n"
+        "+line two\n"
+        " line 3\n"
+    )
+    expected_content = "line 1\nline two\nline 3\n"
+
+    # 1. 创建初始文件
+    create_result = tools.create_file(filename, original_content)
+    assert create_result.success, f"测试设置失败: 无法创建文件: {create_result.result}"
+
+    # 2. 应用补丁
+    patch_result = tools.apply_patch(filename, patch_content)
+    assert patch_result.success, f"应用补丁失败: {patch_result.result}"
+    assert "成功应用" in patch_result.result
+
+    # 3. 验证内容
+    read_result = tools.read_file(filename)
+    assert read_result.success
+    assert read_result.result == expected_content
+
+    # 4. 清理
+    tools.delete_file(filename)

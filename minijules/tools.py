@@ -255,6 +255,39 @@ def run_in_bash(command: str) -> ToolExecutionResult:
         return ToolExecutionResult(success=True, result=output)
     except Exception as e: return ToolExecutionResult(success=False, result=f"运行命令时发生意外错误: {e}")
 
+def apply_patch(filename: str, patch_content: str) -> ToolExecutionResult:
+    """
+    Applies a patch to a file using the unified diff format.
+
+    :param filename: The path to the file to be patched, relative to the workspace root.
+    :param patch_content: A string containing the patch in the unified diff format.
+    :return: A ToolExecutionResult indicating success or failure.
+    """
+    try:
+        safe_path = _get_safe_path(filename)
+        if not safe_path.is_file():
+            return ToolExecutionResult(success=False, result=f"错误: 文件 '{filename}' 不存在。")
+
+        # The `patch` command works with stdin.
+        result = subprocess.run(
+            ["patch", str(safe_path)],
+            input=patch_content,
+            text=True,
+            capture_output=True,
+            cwd=WORKSPACE_DIR, # Run from workspace to ensure correct path handling
+            check=False
+        )
+
+        if result.returncode != 0:
+            return ToolExecutionResult(
+                success=False,
+                result=f"应用补丁失败 (返回码: {result.returncode}):\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            )
+
+        return ToolExecutionResult(success=True, result=f"补丁已成功应用于 '{filename}'。")
+    except Exception as e:
+        return ToolExecutionResult(success=False, result=f"应用补丁时发生意外错误: {e}")
+
 def run_tests_and_parse_report(language: str) -> ToolExecutionResult:
     """根据指定的语言运行测试，生成 JUnit-XML 报告，然后解析它以提供结构化的测试结果。"""
     try:

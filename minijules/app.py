@@ -83,6 +83,7 @@ class JulesApp:
             "write_to_scratchpad": tools.write_to_scratchpad,
             "read_scratchpad": tools.read_scratchpad,
             "run_in_bash": tools.run_in_bash,
+            "apply_patch": tools.apply_patch,
             "replace_function_definition": tools.replace_function_definition,
             "insert_into_class_body": tools.insert_into_class_body,
             "git_status": tools.git_status,
