@@ -4,6 +4,7 @@ from pathlib import Path
 import git
 import json
 import re
+import logging
 
 # 导入 AutoGen v0.4 相关模块
 from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
@@ -30,7 +31,7 @@ def load_language_config():
         with config_path.open("r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"错误: 无法加载或解析 language_config.json: {e}")
+        logging.error(f"错误: 无法加载或解析 language_config.json: {e}")
         return {}
 
 LANGUAGE_CONFIG = load_language_config()
