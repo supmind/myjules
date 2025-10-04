@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any
 import git
 from git.exc import InvalidGitRepositoryError
+import base64
+import io
+import requests
+from PIL import Image
 
 # 导入新的 autogen 模块
 from autogen_agentchat.agents import CodeExecutorAgent
@@ -47,6 +51,7 @@ class TaskState:
     """封装与单个任务相关的所有状态。"""
     task_string: str
     plan: str = ""
+    plan_approved: bool = False
     current_step_index: int = 0
     work_history: List[str] = field(default_factory=list)
 
@@ -96,10 +101,13 @@ class JulesApp:
         self.core_agent.tools = [
             # 计划和状态管理工具
             self.set_plan,
+            self.record_user_approval_for_plan,
             self.plan_step_complete,
             # 信息检索与外部知识
             tools.google_search,
             tools.view_text_website,
+            self.view_image,
+            self.read_image_file,
             # 文件系统和代码分析工具
             tools.read_agents_md,
             tools.list_project_structure,
@@ -126,6 +134,7 @@ class JulesApp:
             self.message_user,
             self.request_user_input,
             self.request_code_review,
+            self.initiate_memory_recording,
             self.pre_commit_instructions,
             self.submit,
             self.task_complete,
@@ -201,8 +210,19 @@ class JulesApp:
         logger.info(f"计划已更新:\n{plan}")
         return f"计划已成功设置。当前步骤 1/{len(plan.splitlines())}。"
 
+    def record_user_approval_for_plan(self) -> str:
+        """[工具] 记录用户对当前计划的批准。"""
+        if not self.state.plan:
+            return "错误: 尚未制定任何计划，无法批准。"
+        self.state.plan_approved = True
+        logger.info("用户已批准计划。现在可以开始执行。")
+        return "计划已获批准。您现在可以开始执行第一个步骤。"
+
     def plan_step_complete(self, message: str) -> str:
         """[工具] 标记当前计划步骤已完成。"""
+        if not self.state.plan_approved:
+            return "错误: 计划尚未获得用户批准。请先使用 `request_user_input` 请求批准，并在用户同意后调用 `record_user_approval_for_plan`。"
+
         total_steps = len(self.state.plan.splitlines())
         if self.state.current_step_index >= total_steps:
             return "所有计划步骤均已完成。"
@@ -231,16 +251,36 @@ class JulesApp:
 2.  **代码审查**: 请求一次最终的代码审查。
     - 使用 `request_code_review` 工具。分析评审结果，如果需要，进行修改。
 
-3.  **最终验证**: 在提交之前，最后一次审视您的代码变更。
+3.  **记录学习**: 调用 `initiate_memory_recording` 来记录本次任务中获得的关键学习、成功的代码模式或特定于仓库的程序。这对未来的任务非常有价值。
+
+4.  **最终验证**: 在提交之前，最后一次审视您的代码变更。
     - 使用 `git_diff` 检查最终的变更。
     - 确保没有遗留任何调试代码或不必要的注释。
 
-4.  **反思和总结**: 准备好一个清晰的提交信息。
+5.  **反思和总结**: 准备好一个清晰的提交信息。
     - 总结您所做的工作、解决的问题以及实现方式。
 
 完成以上所有步骤后，您就可以使用 `submit` 工具来提交您的工作了。
 """
         return instructions
+
+    async def initiate_memory_recording(self, learnings: str) -> str:
+        """[工具] 记录在任务期间获得的关键学习、成功的代码模式或特定于仓库的程序。"""
+        logger.info("正在记录学习经验...")
+        try:
+            learning_doc = f"通用学习经验:\n{learnings}"
+
+            await indexing.task_history_memory.add(
+                MemoryContent(content=learning_doc, mime_type=MemoryMimeType.TEXT)
+            )
+
+            success_message = "学习经验已成功存入记忆库。"
+            logger.info(success_message)
+            return success_message
+        except Exception as e:
+            error_message = f"存入记忆时发生错误: {e}"
+            logger.error(error_message)
+            return error_message
 
     async def submit(self, branch_name: str, commit_message: str, title: str, description: str) -> str:
         """[工具] 提交工作并终止任务。"""
@@ -260,6 +300,84 @@ class JulesApp:
         """[工具] 向用户请求输入，并暂停工作流。"""
         logger.info(f"向用户请求输入: {message}")
         return f"Agent 请求用户输入: '{message}'. 工作流已暂停。TERMINATE"
+
+    async def _describe_image(self, image_data: bytes) -> str:
+        """使用多模态 LLM 描述图像内容的辅助函数。"""
+        logger.info("正在使用多模态 LLM 描述图像...")
+        try:
+            if not self.config_list:
+                return "错误: LLM 配置不可用，无法执行图像描述。"
+
+            # 寻找一个支持视觉的模型配置
+            vision_config = next((c for c in self.config_list if "vision" in c.get("model", "") or "4o" in c.get("model", "")), None)
+            if not vision_config:
+                return "错误: 未在 OAI_CONFIG_LIST 中找到支持视觉的 LLM 模型（例如 gpt-4-vision-preview, gpt-4o）。"
+
+            client = OpenAIChatCompletionClient(
+                model=vision_config.get("model"),
+                api_key=vision_config.get("api_key"),
+                base_url=vision_config.get("base_url"),
+            )
+
+            base64_image = base64.b64encode(image_data).decode('utf-8')
+
+            # 创建一个 UserMessage，其中包含文本和图像
+            # 注意: AutoGen 的 UserMessage/SystemMessage 还不直接支持多模态内容列表
+            # 我们需要构建一个符合 OpenAI API 格式的原始消息字典
+            # 这是一个临时的解决方案，直到 AutoGen 核心更好地支持它
+            raw_message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这是一个图像，请详细描述你看到了什么。如果它是一个界面截图，请描述其布局、组件和文本内容。如果它是一个图表，请解释其数据和趋势。"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+
+            # 使用原始消息列表调用 create
+            response = await client.create(messages=[raw_message])
+
+            description = response.content
+            if not isinstance(description, str):
+                description = str(description)
+
+            logger.info(f"图像描述完成:\n{description}")
+            return f"图像描述:\n{description}"
+
+        except Exception as e:
+            error_message = f"描述图像时发生意外错误: {e}"
+            logger.error(error_message)
+            return error_message
+
+    async def view_image(self, url: str) -> str:
+        """[工具] 下载并描述来自 URL 的图像。"""
+        logger.info(f"正在从 URL 查看图像: {url}")
+        try:
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            image_data = response.content
+            return await self._describe_image(image_data)
+        except requests.RequestException as e:
+            return f"从 URL 下载图像时发生网络错误: {e}"
+        except Exception as e:
+            return f"查看 URL 图像时发生意外错误: {e}"
+
+    async def read_image_file(self, filepath: str) -> str:
+        """[工具] 读取并描述本地文件系统中的图像文件。"""
+        logger.info(f"正在从文件读取图像: {filepath}")
+        try:
+            safe_path = tools._get_safe_path(filepath)
+            if not safe_path.is_file():
+                return f"错误: 图像文件 '{filepath}' 未找到。"
+
+            image_data = safe_path.read_bytes()
+            return await self._describe_image(image_data)
+        except Exception as e:
+            return f"读取图像文件时发生意外错误: {e}"
 
     async def run_tests_and_debug(self, max_retries: int = 3) -> str:
         """
