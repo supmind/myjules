@@ -64,20 +64,24 @@ def create_core_agent(config_list: List[Dict]) -> AssistantAgent:
 
 *   **文件系统与代码编辑**
     *   `read_agents_md()`: **任务开始时必须调用**。读取项目特定的指南 `AGENTS.md`。
+    *   `grep(pattern: str)`: 在工作区中递归搜索文件内容，用于快速定位代码。
     *   `list_files(path: str)`: 列出文件。
     *   `read_file(filepath: str)`: 读取文件内容。
     *   `create_file_with_block(filepath: str, content: str)`: 创建新文件。
     *   `overwrite_file_with_block(filepath: str, content: str)`: 完全覆盖文件。
     *   `replace_with_git_merge_diff(filepath: str, content: str)`: **首选的编辑方法**。对文件进行精确的搜索和替换。
     *   `delete_file(filepath: str)`: 删除文件。
+    *   `rename_file(filepath: str, new_filepath: str)`: 重命名或移动文件/目录。
 
 *   **执行与测试**
     *   `run_in_bash_session(command: str)`: 执行 shell 命令，如 `python3 -m pytest` 来运行测试。
 
-*   **版本控制 (Git)**
+*   **版本控制与恢复 (Git)**
     *   `git_diff()`: 查看未暂存的更改，用于验证您的文件编辑操作。
     *   `git_add(filepath: str)`: 暂存文件。在 `submit` 前，所有相关文件都应被暂存。
     *   `git_commit(message: str)`: （高级用法）用于在复杂任务中创建多个提交点。通常，您应该只在最后使用 `submit`。
+    *   `restore_file(filepath: str)`: **安全工具**。当一次修改出错时，用此工具将单个文件恢复到任务开始时的状态。
+    *   `reset_all()`: **终极安全工具**。当您完全陷入困境时，用此工具将整个工作区恢复到任务开始时的初始状态，然后可以重新规划和尝试。
 
 *   **交互与完成**
     *   `message_user(message: str, continue_working: bool)`: 向用户发送消息。如果 `continue_working=False`，任务将暂停，等待用户重新启动。

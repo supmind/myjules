@@ -326,6 +326,45 @@ def delete_file(filename: str) -> str:
     except Exception as e: return f"删除文件时发生意外错误: {e}"
 delete_file.is_dangerous = True
 
+def rename_file(filepath: str, new_filepath: str) -> str:
+    """重命名或移动一个文件或目录。"""
+    try:
+        safe_from_path = _get_safe_path(filepath)
+        safe_to_path = _get_safe_path(new_filepath)
+
+        if not safe_from_path.exists():
+            return f"错误: 源路径 '{filepath}' 不存在。"
+        if safe_to_path.exists():
+            return f"错误: 目标路径 '{new_filepath}' 已存在。"
+
+        safe_to_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_from_path.rename(safe_to_path)
+        return f"路径已成功从 '{filepath}' 重命名为 '{new_filepath}'。"
+    except Exception as e:
+        return f"重命名文件时发生意外错误: {e}"
+rename_file.is_dangerous = True
+
+def grep(pattern: str) -> str:
+    """在工作区中递归搜索文件内容。"""
+    try:
+        # 使用 -r (递归) 和 -n (行号) 标志进行搜索
+        # 使用 shlex.quote 来安全地处理用户输入的模式
+        import shlex
+        quoted_pattern = shlex.quote(pattern)
+        command = f"grep -rn {quoted_pattern} ."
+
+        result = subprocess.run(command, shell=True, cwd=WORKSPACE_DIR, capture_output=True, text=True, check=False)
+
+        # grep 在未找到匹配项时返回码为 1，这不应被视为一个程序错误
+        if result.returncode > 1:
+            return f"Grep 命令执行出错 (返回码: {result.returncode}):\n{result.stderr}"
+
+        output = result.stdout if result.stdout else "未找到匹配项。"
+        return output
+
+    except Exception as e:
+        return f"执行 grep 时发生意外错误: {e}"
+
 def run_in_bash_session(command: str) -> str:
     """在 bash 会话中运行命令。"""
     try:
@@ -393,6 +432,44 @@ def git_create_branch(branch_name: str) -> str:
         return f"已成功创建并切换到新分支: '{branch_name}'。"
     except Exception as e: return f"创建 Git 分支时发生意外错误: {e}"
 git_create_branch.is_dangerous = True
+
+
+def restore_file(filepath: str) -> str:
+    """将指定文件恢复到任务开始时的状态。"""
+    try:
+        safe_path = _get_safe_path(filepath)
+        repo = git.Repo(WORKSPACE_DIR)
+
+        # 检查标签是否存在
+        tag_name = "minijules-initial-state"
+        if tag_name not in repo.tags:
+            return f"错误: 未找到初始状态标签 '{tag_name}'。无法执行恢复。"
+
+        repo.git.checkout(tag_name, '--', safe_path)
+        return f"文件 '{filepath}' 已成功恢复到初始状态。"
+    except Exception as e:
+        return f"恢复文件时发生意外错误: {e}"
+restore_file.is_dangerous = True
+
+
+def reset_all() -> str:
+    """将整个工作区恢复到任务开始时的状态。"""
+    try:
+        repo = git.Repo(WORKSPACE_DIR)
+
+        # 检查标签是否存在
+        tag_name = "minijules-initial-state"
+        if tag_name not in repo.tags:
+            return f"错误: 未找到初始状态标签 '{tag_name}'。无法执行重置。"
+
+        repo.git.reset('--hard', tag_name)
+        # 清理所有未被跟踪的文件和目录
+        repo.git.clean('-fdx')
+
+        return "整个工作区已成功重置到初始状态。"
+    except Exception as e:
+        return f"重置工作区时发生意外错误: {e}"
+reset_all.is_dangerous = True
 
 
 def _parse_pytest_output(output: str) -> list[dict[str, any]]:

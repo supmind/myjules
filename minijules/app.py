@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import argparse
 from dataclasses import dataclass, field
 from typing import Dict, List, Any
+import git
+from git.exc import InvalidGitRepositoryError
 
 # 导入新的 autogen 模块
 from autogen_agentchat.agents import CodeExecutorAgent
@@ -101,12 +103,14 @@ class JulesApp:
             # 文件系统和代码分析工具
             tools.read_agents_md,
             tools.list_project_structure,
+            tools.grep,
             tools.list_files,
             tools.read_file,
             tools.create_file_with_block,
             tools.overwrite_file_with_block,
             tools.replace_with_git_merge_diff,
             tools.delete_file,
+            tools.rename_file,
             tools.apply_patch,
             # 执行和版本控制工具
             tools.run_in_bash_session,
@@ -116,6 +120,8 @@ class JulesApp:
             tools.git_add,
             tools.git_commit,
             tools.git_create_branch,
+            tools.restore_file,
+            tools.reset_all,
             # 用户交互和任务完成工具
             self.message_user,
             self.request_user_input,
@@ -138,6 +144,55 @@ class JulesApp:
             participants=[self.core_agent, self.code_executor_agent],
             termination_condition=termination_condition,
         )
+
+    async def _initialize_workspace_git(self):
+        """
+        确保工作区是一个 Git 仓库，并创建一个初始状态标签。
+        这为 'restore_file' 和 'reset_all' 工具提供了基础。
+        """
+        logger.info("正在初始化或验证工作区的 Git 状态...")
+        try:
+            repo = git.Repo(tools.WORKSPACE_DIR)
+            logger.info("Git 仓库已存在。")
+        except InvalidGitRepositoryError:
+            logger.info("未找到 Git 仓库，正在初始化一个新的...")
+            repo = git.Repo.init(tools.WORKSPACE_DIR)
+        except Exception as e:
+            logger.error(f"访问 Git 仓库时发生未知错误: {e}")
+            return
+
+        # 确保有 user.name 和 user.email 配置，以避免提交错误
+        try:
+            repo.config_reader().get_value("user", "name")
+            repo.config_reader().get_value("user", "email")
+        except Exception:
+            logger.info("正在设置默认的 Git 用户配置...")
+            with repo.config_writer() as cw:
+                cw.set_value("user", "name", tools.GIT_AUTHOR_NAME)
+                cw.set_value("user", "email", tools.GIT_AUTHOR_EMAIL)
+
+        # 检查仓库是否为空。如果是，则创建一个初始的空提交以确保 HEAD 有效。
+        try:
+            repo.head.commit
+        except ValueError:
+            logger.info("仓库为空，正在创建初始空提交以设置 HEAD...")
+            repo.git.commit("--allow-empty", "-m", "chore: Initial empty commit for minijules setup")
+
+        # 如果有其他未提交的变更或未跟踪的文件，创建另一个提交
+        if repo.is_dirty(untracked_files=True):
+            logger.info("检测到未提交的变更或未跟踪的文件，正在创建初始状态提交...")
+            repo.git.add(A=True)
+            repo.git.commit(m="chore: 保存任务开始前的初始工作区状态")
+
+        # 删除旧标签（如果存在），然后创建新标签
+        tag_name = "minijules-initial-state"
+        if tag_name in repo.tags:
+            logger.info(f"正在删除已存在的标签 '{tag_name}'...")
+            repo.delete_tag(tag_name)
+
+        logger.info(f"正在创建初始状态标签 '{tag_name}'...")
+        repo.create_tag(tag_name, message="任务开始时的快照")
+        logger.info("工作区 Git 状态初始化完成。")
 
     def set_plan(self, plan: str) -> str:
         """[工具] 设置或更新任务计划。"""
@@ -321,6 +376,9 @@ class JulesApp:
     async def run(self):
         """运行主应用流程。"""
         logger.info(f"接收到任务: {self.state.task_string}")
+
+        # 0. 初始化工作区 Git 状态
+        await self._initialize_workspace_git()
 
         # 1. 索引工作区
         logger.info("正在异步索引工作区...")
