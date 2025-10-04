@@ -98,6 +98,7 @@ class JulesApp:
             tools.apply_patch,
             # 执行和版本控制工具
             tools.run_in_bash_session,
+            self.run_tests_and_debug,
             tools.git_status,
             tools.git_diff,
             tools.git_add,
@@ -192,6 +193,33 @@ class JulesApp:
         """[工具] 向用户请求输入，并暂停工作流。"""
         logger.info(f"向用户请求输入: {message}")
         return f"Agent 请求用户输入: '{message}'. 工作流已暂停。TERMINATE"
+
+    async def run_tests_and_debug(self, test_command: str = "python3 -m pytest", max_retries: int = 3) -> str:
+        """
+        [高级工具] 运行测试命令，如果失败，则尝试自动调试和修复。
+        """
+        logger.info(f"开始使用命令 '{test_command}' 进行测试和调试...")
+        try:
+            if not self.config_list:
+                return "错误: LLM配置不可用, 无法执行调试。"
+
+            # 创建一个临时的LLM客户端用于修复
+            config = self.config_list[0]
+            client = OpenAIChatCompletionClient(
+                model=config.get("model"),
+                api_key=config.get("api_key"),
+                base_url=config.get("base_url"),
+            )
+
+            return await tools.run_tests_and_debug(
+                test_command=test_command,
+                client=client,
+                max_retries=max_retries
+            )
+        except Exception as e:
+            error_message = f"执行测试和调试时发生意外错误: {e}"
+            logger.error(error_message)
+            return error_message
 
     async def request_code_review(self) -> str:
         """[工具] 请求对当前代码变更进行评审。"""
