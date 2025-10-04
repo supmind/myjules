@@ -26,7 +26,7 @@ async def test_app_initializes_and_patches_correctly(mocker):
 @pytest.mark.asyncio
 async def test_request_code_review_tool(mocker):
     """
-    测试 _request_code_review 工具是否能正确构建提示并调用LLM。
+    测试 tools.request_code_review 工具是否能正确构建提示并调用LLM。
     """
     # 1. 准备模拟数据
     test_task = "这是一个测试任务"
@@ -35,25 +35,25 @@ async def test_request_code_review_tool(mocker):
 
     # 2. 模拟外部依赖
     mocker.patch('minijules.tools.git_diff', return_value=mock_diff)
+    # 模拟 agent 创建，避免在 App 初始化时因 mock model name 出错
+    mocker.patch('minijules.app.create_core_agent')
 
-    mocker.patch('minijules.agents.OpenAIChatCompletionClient')
-
+    # 模拟在 tools.py 中创建的 client
     mock_llm_response = MagicMock()
     mock_llm_response.content = mock_review_response
     mock_reviewer_client = MagicMock()
     mock_reviewer_client.create = AsyncMock(return_value=mock_llm_response)
-    mocker.patch('minijules.app.OpenAIChatCompletionClient', return_value=mock_reviewer_client)
+    mocker.patch('minijules.tools.OpenAIChatCompletionClient', return_value=mock_reviewer_client)
 
     # 3. 初始化App
     app = JulesApp(task_string=test_task, config_list=[{'model': 'mock', 'api_key': 'mock_key'}])
 
-    # 4. 调用被测试的工具
-    result = await app.request_code_review()
+    # 4. 调用被测试的工具 (重构后的版本)
+    result = await tools.request_code_review(app)
 
     # 5. 验证
     mock_reviewer_client.create.assert_called_once()
 
-    # **关键修复**: 从 `call_args.kwargs` 中获取关键字参数，而不是从 `call_args.args` 获取位置参数。
     messages = mock_reviewer_client.create.call_args.kwargs['messages']
     system_message = messages[0].content
     user_prompt = messages[1].content

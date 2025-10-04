@@ -7,11 +7,20 @@ import re
 import logging
 
 # 导入 AutoGen v0.4 相关模块
+from autogen_core.models import SystemMessage, UserMessage
 from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
 from tree_sitter_language_pack import get_language, get_parser
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 # 导入项目模块
+import minijules.indexing as indexing
+from minijules.types import TaskState
+
+from typing import TYPE_CHECKING, List, Dict
+
+if TYPE_CHECKING:
+    # 避免循环导入
+    from minijules.app import JulesApp
 
 # --- 工具配置常量 ---
 GIT_AUTHOR_NAME = "MiniJules"
@@ -667,3 +676,223 @@ async def run_tests_and_debug(
 
     return "调试循环因未知原因完成。"
 run_tests_and_debug.is_dangerous = True
+
+
+# --- 从 app.py 迁移的工具 (现在只保留复杂的、有大量独立逻辑的工具) ---
+# 这些工具仍然由 app.py 中的包装器方法调用，以注入状态。
+
+async def pre_commit_instructions(app_instance: 'JulesApp') -> str:
+    """[工具] 返回预提交指令。"""
+    instructions = """\
+# 预提交检查清单
+
+在您提交代码之前，请仔细检查并完成以下步骤：
+
+1.  **运行所有测试**: 确保您的更改没有破坏任何现有功能。
+    - 使用 `run_in_bash_session` 运行 `python3 -m pytest`。
+
+2.  **代码审查**: 请求一次最终的代码审查。
+    - 使用 `request_code_review` 工具。分析评审结果，如果需要，进行修改。
+
+3.  **记录学习**: 调用 `initiate_memory_recording` 来记录本次任务中获得的关键学习、成功的代码模式或特定于仓库的程序。这对未来的任务非常有价值。
+
+4.  **最终验证**: 在提交之前，最后一次审视您的代码变更。
+    - 使用 `git_diff` 检查最终的变更。
+    - 确保没有遗留任何调试代码或不必要的注释。
+
+5.  **反思和总结**: 准备好一个清晰的提交信息。
+    - 总结您所做的工作、解决的问题以及实现方式。
+
+完成以上所有步骤后，您就可以使用 `submit` 工具来提交您的工作了。
+"""
+    return instructions
+
+async def initiate_memory_recording(app_instance: 'JulesApp', learnings: str) -> str:
+    """[工具] 记录在任务期间获得的关键学习、成功的代码模式或特定于仓库的程序。"""
+    logger.info("正在记录学习经验...")
+    try:
+        learning_doc = f"通用学习经验:\n{learnings}"
+
+        await indexing.task_history_memory.add(
+            MemoryContent(content=learning_doc, mime_type=MemoryMimeType.TEXT)
+        )
+
+        success_message = '学习经验已成功存入记忆库。'
+        logger.info(success_message)
+        return success_message
+    except Exception as e:
+        error_message = f"存入记忆时发生错误: {e}"
+        logger.error(error_message)
+        return error_message
+
+async def request_code_review(app_instance: 'JulesApp') -> str:
+    """[工具] 请求对当前代码变更进行评审。"""
+    logger.info("请求代码评审...")
+    try:
+        if not app_instance.config_list:
+            return "错误: LLM配置不可用, 无法执行代码评审。"
+
+        config = app_instance.config_list[0]
+        reviewer_client = OpenAIChatCompletionClient(
+            model=config.get("model"),
+            api_key=config.get("api_key"),
+            base_url=config.get("base_url"),
+        )
+
+        code_diff = git_diff()
+        if "无变更" in code_diff:
+            return "代码无变更，无需评审。"
+
+        task_description = app_instance.state.task_string
+
+        reviewer_system_prompt = """您是一位资深的软件架构师和代码评审专家。您的任务是严格审查所提供的代码变更。
+请根据以下标准进行评估：
+1.  **目标符合度**: 代码变更是否完全、准确地实现了原始任务的要求？
+2.  **正确性与Bug**: 代码逻辑是否正确？是否存在潜在的运行时错误、逻辑漏洞或边缘情况处理不当的问题？
+3.  **代码质量**: 代码是否清晰、可读、可维护？是否遵循了通用的最佳实践？
+4.  **完整性**: 变更是否完整？例如，如果添加了新功能，是否也添加了相应的单元测试？
+
+您的输出应该是一个简洁的Markdown格式的评审报告。如果代码质量很高，请以 `#Correct#` 开头。如果有问题，请清晰地列出需要修改的地方。"""
+
+        review_prompt = f"""
+### 原始任务
+{task_description}
+
+### 代码变更 (Git Diff)
+```diff
+{code_diff}
+```
+
+请根据上述标准提供您的评审报告。"""
+
+        response = await reviewer_client.create(
+            messages=[
+                SystemMessage(content=reviewer_system_prompt),
+                UserMessage(content=review_prompt, source="code-reviewer-prompt")
+            ]
+        )
+
+        review_content = response.content
+        if not isinstance(review_content, str):
+             review_content = str(review_content)
+
+        logger.info(f"代码评审完成:\n{review_content}")
+        return f"代码评审结果:\n{review_content}"
+
+    except Exception as e:
+        error_message = f"执行代码评审时发生意外错误: {e}"
+        logger.error(error_message)
+        return error_message
+
+async def _describe_image(app_instance: 'JulesApp', image_data: bytes) -> str:
+    """使用多模态 LLM 描述图像内容的辅助函数。"""
+    logger.info("正在使用多模态 LLM 描述图像...")
+    try:
+        if not app_instance.config_list:
+            return "错误: LLM 配置不可用，无法执行图像描述。"
+
+        # 寻找一个支持视觉的模型配置
+        vision_config = next((c for c in app_instance.config_list if "vision" in c.get("model", "") or "4o" in c.get("model", "")), None)
+        if not vision_config:
+            return "错误: 未在 OAI_CONFIG_LIST 中找到支持视觉的 LLM 模型（例如 gpt-4-vision-preview, gpt-4o）。"
+
+        client = OpenAIChatCompletionClient(
+            model=vision_config.get("model"),
+            api_key=vision_config.get("api_key"),
+            base_url=vision_config.get("base_url"),
+        )
+
+        base64_image = base64.b64encode(image_data).decode('utf-8')
+        raw_message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "这是一个图像，请详细描述你看到了什么。如果它是一个界面截图，请描述其布局、组件和文本内容。如果它是一个图表，请解释其数据和趋势。"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
+                    }
+                }
+            ]
+        }
+        response = await client.create(messages=[raw_message])
+
+        description = response.content
+        if not isinstance(description, str):
+            description = str(description)
+
+        logger.info(f"图像描述完成:\n{description}")
+        return f"图像描述:\n{description}"
+
+    except Exception as e:
+        error_message = f"描述图像时发生意外错误: {e}"
+        logger.error(error_message)
+        return error_message
+
+async def view_image(app_instance: 'JulesApp', url: str) -> str:
+    """[工具] 下载并描述来自 URL 的图像。"""
+    logger.info(f"正在从 URL 查看图像: {url}")
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        image_data = response.content
+        return await _describe_image(app_instance, image_data)
+    except requests.RequestException as e:
+        return f"从 URL 下载图像时发生网络错误: {e}"
+    except Exception as e:
+        return f"查看 URL 图像时发生意外错误: {e}"
+
+async def read_image_file(app_instance: 'JulesApp', filepath: str) -> str:
+    """[工具] 读取并描述本地文件系统中的图像文件。"""
+    logger.info(f"正在从文件读取图像: {filepath}")
+    try:
+        safe_path = _get_safe_path(filepath)
+        if not safe_path.is_file():
+            return f"错误: 图像文件 '{filepath}' 未找到。"
+
+        image_data = safe_path.read_bytes()
+        return await _describe_image(app_instance, image_data)
+    except Exception as e:
+        return f"读取图像文件时发生意外错误: {e}"
+
+# 这个映射也从 app.py 迁移过来，因为它与测试工具有直接关联
+TEST_COMMAND_MAP = {
+    "python": "python3 -m pytest",
+    "javascript": "npm test",
+}
+
+async def run_tests_and_debug_app(app_instance: 'JulesApp', max_retries: int = 3) -> str:
+    """
+    [高级工具] 自动检测项目语言，运行测试，如果失败，则尝试自动调试和修复。
+    (这是 app.py 中 run_tests_and_debug 的迁移版本)
+    """
+    try:
+        language = detect_project_language()
+        test_command = TEST_COMMAND_MAP.get(language)
+
+        if not test_command:
+            return f"错误: 不支持为检测到的语言 '{language}' 自动运行测试。请手动运行测试。"
+
+        logger.info(f"检测到语言 '{language}'。将使用命令: '{test_command}'")
+
+        if not app_instance.config_list:
+            return "错误: LLM配置不可用, 无法执行调试。"
+
+        # 创建一个临时的LLM客户端用于修复
+        config = app_instance.config_list[0]
+        client = OpenAIChatCompletionClient(
+            model=config.get("model"),
+            api_key=config.get("api_key"),
+            base_url=config.get("base_url"),
+        )
+
+        # 调用 tools.py 中已有的核心调试循环
+        return await run_tests_and_debug(
+            test_command=test_command,
+            client=client,
+            max_retries=max_retries
+        )
+    except Exception as e:
+        error_message = f"执行测试和调试时发生意外错误: {e}"
+        logger.error(error_message)
+        return error_message
