@@ -67,6 +67,14 @@ class JulesApp:
     """
     MiniJules 主应用程序类 (v0.4 重构版)。
     """
+    TEST_COMMAND_MAP = {
+        "python": "python3 -m pytest",
+        "javascript": "npm test",
+        # 未来可添加更多语言的测试命令
+        # 'go': 'go test ./...',
+        # 'rust': 'cargo test',
+    }
+
     def __init__(self, task_string: str, config_list: List[Dict], max_steps: int = MAX_STEPS):
         self.state = TaskState(task_string=task_string)
         self.max_steps = max_steps
@@ -194,12 +202,19 @@ class JulesApp:
         logger.info(f"向用户请求输入: {message}")
         return f"Agent 请求用户输入: '{message}'. 工作流已暂停。TERMINATE"
 
-    async def run_tests_and_debug(self, test_command: str = "python3 -m pytest", max_retries: int = 3) -> str:
+    async def run_tests_and_debug(self, max_retries: int = 3) -> str:
         """
-        [高级工具] 运行测试命令，如果失败，则尝试自动调试和修复。
+        [高级工具] 自动检测项目语言，运行测试，如果失败，则尝试自动调试和修复。
         """
-        logger.info(f"开始使用命令 '{test_command}' 进行测试和调试...")
         try:
+            language = tools.detect_project_language()
+            test_command = self.TEST_COMMAND_MAP.get(language)
+
+            if not test_command:
+                return f"错误: 不支持为检测到的语言 '{language}' 自动运行测试。请手动运行测试。"
+
+            logger.info(f"检测到语言 '{language}'。将使用命令: '{test_command}'")
+
             if not self.config_list:
                 return "错误: LLM配置不可用, 无法执行调试。"
 

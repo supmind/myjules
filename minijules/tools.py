@@ -96,6 +96,34 @@ def _traverse_for_structure(node, lang_config, indent_level=1):
 
 # --- Agent 可用工具 ---
 
+def detect_project_language() -> str:
+    """
+    通过分析文件扩展名来检测项目的主要编程语言。
+    返回一个标识语言的字符串，如 'python', 'javascript', 'go', 'rust', 或 'unknown'。
+    """
+    logger.info("正在检测项目语言...")
+    extension_counts = {}
+
+    # 映射文件扩展名到我们在 language_config.json 中定义的语言名称
+    lang_map = {ext: config['language'] for ext, config in LANGUAGE_CONFIG.items()}
+
+    for file_path in WORKSPACE_DIR.rglob('*'):
+        if file_path.is_file():
+            ext = file_path.suffix
+            if ext in lang_map:
+                lang = lang_map[ext]
+                extension_counts[lang] = extension_counts.get(lang, 0) + 1
+
+    if not extension_counts:
+        logger.warning("在工作区中未找到受支持的语言文件。")
+        return "unknown"
+
+    # 找出数量最多的语言
+    dominant_language = max(extension_counts, key=extension_counts.get)
+    logger.info(f"检测到项目主要语言为: {dominant_language}")
+    return dominant_language
+
+
 def list_project_structure() -> str:
     """
     递归扫描工作区，解析所有支持的文件，并返回所有类、函数和方法的树状结构。
