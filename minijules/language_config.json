@@ -1,0 +1,26 @@
+{
+    ".py": {
+        "language": "python",
+        "function_node_type": "function_definition",
+        "class_node_type": "class_definition"
+    },
+    ".js": {
+        "language": "javascript",
+        "function_node_types": [
+            "function_declaration",
+            "method_definition",
+            "variable_declarator"
+        ],
+        "class_node_type": "class_declaration"
+    },
+    ".go": {
+        "language": "go",
+        "function_node_type": "function_declaration",
+        "class_node_type": "type_spec"
+    },
+    ".rs": {
+        "language": "rust",
+        "function_node_type": "function_item",
+        "class_node_type": "struct_item"
+    }
+}

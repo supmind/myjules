@@ -1,0 +1,12 @@
+autogen-agentchat
+autogen-ext[openai,docker]
+chromadb
+sentence-transformers
+tree-sitter
+tree-sitter-language-pack
+GitPython
+python-dotenv
+pytest
+pytest-mock
+pytest-asyncio
+asyncio-atexit
