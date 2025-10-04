@@ -20,6 +20,7 @@ from autogen_core.models import SystemMessage, UserMessage
 # 导入重构后的项目模块
 import minijules.tools as tools
 import minijules.indexing as indexing
+from minijules import query_generator
 from minijules.agents import create_core_agent
 
 # --- 日志配置 ---
@@ -274,12 +275,18 @@ class JulesApp:
         """运行主应用流程。"""
         logger.info(f"接收到任务: {self.state.task_string}")
 
+        # 1. 索引工作区
         logger.info("正在异步索引工作区...")
         await indexing.index_workspace()
         logger.info("工作区索引完成。")
 
+        # 2. 检索并构建增强的上下文
+        enhanced_task_string = await self._retrieve_enhanced_context()
+        logger.info("上下文增强完成，准备开始任务流程。")
+
+        # 3. 开始任务流程
         logger.info("--- 任务流程开始 ---")
-        chat_result = await self.group_chat.run(task=self.state.task_string)
+        chat_result = await self.group_chat.run(task=enhanced_task_string)
         logger.info("--- 任务流程结束 ---")
 
         if chat_result.stop_reason:
@@ -290,6 +297,62 @@ class JulesApp:
         for msg_text in self.state.work_history:
             logger.info(msg_text)
             logger.info("-" * 20)
+
+    async def _retrieve_enhanced_context(self) -> str:
+        """
+        执行高级RAG流程：分析结构、生成查询、检索上下文，并构建最终的增强任务字符串。
+        """
+        # 分析项目结构
+        logger.info("正在分析项目结构...")
+        project_structure = tools.list_project_structure()
+
+        # 生成智能查询
+        query_client = OpenAIChatCompletionClient(
+            model=self.config_list[0].get("model"),
+            api_key=self.config_list[0].get("api_key"),
+            base_url=self.config_list[0].get("base_url"),
+        )
+        smart_queries = await query_generator.generate_smart_queries(
+            task_string=self.state.task_string,
+            project_structure=project_structure,
+            client=query_client
+        )
+
+        # 执行检索并收集上下文
+        logger.info(f"使用智能查询进行检索: {smart_queries}")
+        retrieved_context = []
+        retrieved_content_set = set()
+
+        all_queries = [self.state.task_string] + smart_queries
+        for query in all_queries:
+            code_results = await indexing.code_rag_memory.query(query)
+            history_results = await indexing.task_history_memory.query(query)
+
+            for res in code_results + history_results:
+                if res.content not in retrieved_content_set:
+                    retrieved_context.append(res.content)
+                    retrieved_content_set.add(res.content)
+
+        context_str = "\n\n---\n\n".join(retrieved_context)
+        logger.info(f"共检索到 {len(retrieved_context)} 条相关上下文。")
+
+        # 构建最终的增强任务描述
+        enhanced_task_string = f"""
+# 原始任务
+{self.state.task_string}
+
+# 当前项目结构概览
+{project_structure}
+
+# 基于智能查询检索到的相关上下文
+以下是根据任务分析检索到的、可能最相关的代码块和历史任务记录。请优先参考这些信息。
+---
+{context_str if context_str else "未检索到额外上下文。"}
+---
+
+请根据以上所有信息，开始您的工作。
+"""
+        return enhanced_task_string
 
 async def main():
     """程序主入口。"""
