@@ -18,14 +18,12 @@ MiniJules 是一个基于 `autogen` 框架（v0.4+）构建的高级 AI 软件�
 
 ## 关键特性
 
--   **RAG (检索增强生成)**: 系统内置了一个基于 `ChromaDB` 和 `sentence-transformers` 的代码检索系统 (`code_rag_memory`)。在任务开始时，它会自动索引工作区中的代码，使 `CoreAgent` 能够基于现有代码的上下文做出更明智的决策。
+-   **网络搜索能力**: MiniJules 现在可以访问互联网！当遇到未知错误、不熟悉的技术或需要查阅最新文档时，它会主动使用 `google_search` 和 `view_text_website` 工具来寻找答案，显著增强了其自主解决问题的能力。
+-   **`AGENTS.md` 协议**: 您可以在项目的根目录中创建一个 `AGENTS.md` 文件，用以定义项目特定的规则、编码规范或任何其他重要指令。MiniJules 在任务开始时会首先阅读此文件，并在整个工作流程中严格遵守这些指南，使其能更好地适应不同项目的独特要求。
+-   **高级RAG (检索增强生成)**: 系统内置了一个基于 `ChromaDB` 和 `sentence-transformers` 的代码检索系统 (`code_rag_memory`)。在任务开始时，它会自动索引工作区中的代码，使 `CoreAgent` 能够基于现有代码的上下文做出更明智的决策。
 -   **长期记忆**: 系统拥有一个独立的记忆库 (`task_history_memory`)，用于存储已完成任务的总结和代码变更。这使得 `CoreAgent` 能够从过去的成功经验中学习。
--   **全面的工具集**: `CoreAgent` 可以使用 `minijules/tools.py` 中提供的一系列强大工具，包括：
-    *   **安全的文件操作**: 创建、读取、覆盖和删除文件。
-    *   **精确的代码编辑**: 使用 `replace_with_git_merge_diff` 进行精确的搜索和替换。
-    *   **Shell 命令执行**: 通过 `run_in_bash_session` 运行测试、构建等命令。
-    *   **版本控制**: 与 Git 仓库进行交互（创建分支、添加、提交等）。
--   **代码审查**: 在提交最终工作前，`CoreAgent` 会使用 `_request_code_review` 工具，该工具会调用一个 LLM 来对代码变更进行评审，以确保质量。
+-   **全面的工具集**: `CoreAgent` 可以使用 `minijules/tools.py` 中提供的一系列强大工具，包括安全的文件操作、精确的代码编辑、Shell 命令执行和版本控制。
+-   **自动化代码审查**: 在提交最终工作前，`CoreAgent` 会调用一个 LLM 来对代码变更进行评审，以确保质量。
 
 ## 安装
 
@@ -36,7 +34,7 @@ MiniJules 是一个基于 `autogen` 框架（v0.4+）构建的高级 AI 软件�
     python3 -m venv .venv
     source .venv/bin/activate
     ```
-4.  安装所有必需的依赖项。项目使用 `pip-tools` 管理依赖，所有固定的依赖项都在 `requirements.txt` 中。
+4.  **安装依赖**: 项目使用 `pip-tools` 管理依赖。所有必需的依赖项都已固定在 `requirements.txt` 中。请运行以下命令进行安装：
     ```bash
     python3 -m pip install -r requirements.txt
     ```
@@ -44,6 +42,8 @@ MiniJules 是一个基于 `autogen` 框架（v0.4+）构建的高级 AI 软件�
 ## 如何运行
 
 通过命令行启动 MiniJules，并向其分配一个任务。
+
+**重要提示**: 如果您创建了 `AGENTS.md` 文件，MiniJules 会自动读取并遵守其中的规则。
 
 **基本用法:**
 ```bash
